@@ -1,0 +1,1397 @@
+---
+title: "LabStat2 - Sprawozdanie 2"
+author: "Micha³ Makowski"
+date: "06 stycznia 2017r."
+output:
+  pdf_document:
+    fig_height: 4
+    highlight: tango
+    toc: yes
+subtitle: '...czyli jakie artyku³y promowaæ na stronie g³ównej...'
+lang: pl-PL
+---
+
+```{r knitrOptions, include=FALSE}
+
+knitr::opts_chunk$set(fit.align="center", echo=FALSE, warning=FALSE, error=FALSE, message=FALSE)
+
+inline_hook <- function(x) 
+{
+    if (is.numeric(x)) 
+    {
+        format(x, digits = 2)
+    } else x
+}
+
+knitr::knit_hooks$set(inline=inline_hook)
+
+```
+
+```{r libraries, include=FALSE}
+
+rm(list=ls()) 
+
+options(width=100)
+
+# install.packages("MASS")
+library(MASS)
+# install.packages("knitr")
+library(knitr)
+# install.packages("utils")
+library(utils)
+# install.packages("stringr")
+library(stringr)
+# install.packages("broman")
+library(broman)
+# install.packages("ggplot2")
+library(ggplot2)
+# install.packages("moments")
+library(moments)
+# install.packages("GGally")
+library(GGally)
+# install.packages("car")
+library(car)
+# install.packages("lmtest")
+library(lmtest)
+# install.packages("ggfortify")
+library(ggfortify)
+# install.packages("dplyr")
+library(dplyr)
+# install.packages("glmnet")
+library(glmnet)
+# install.packages("tidyr")
+library(tidyr)
+
+```
+
+\newpage
+# Wstêp
+
+### Dane
+
+Dane, który bêdziemy analizowali, podsumowywuj¹ charakterystyki artyku³ów opublikowanych na stronie 
+[mashable.com/](http://mashable.com/) na przestrzeni lat 2013 i 2014. Mashable to portal publikuj¹cy
+newsy ze œwiata nowych technologii, rozrywki, polityki, lifestyle'u itp. 
+Za przygotowanie i udostêpnienie danych odpowiedzialni s¹ Kelwin Fernandes,  
+Pedro Vinagre, Paulo Cortez, Pedro Sernadel.
+Dostepne s¹ one pod [LINKiem](http://archive.ics.uci.edu/ml/datasets/Online+News+Popularity)
+
+```{r loadData, include=FALSE}
+
+popularity=tryCatch(
+    read.csv("OnlineNewsPopularity.csv"),
+    error = function(e)
+    {
+        download.file("http://archive.ics.uci.edu/ml/machine-learning-databases/00332/OnlineNewsPopularity.zip",
+                      "OnlineNewsPopularity.zip")
+        unzip("OnlineNewsPopularity.zip")
+        read.csv("OnlineNewsPopularity/OnlineNewsPopularity.csv")
+    }
+)
+
+popularity=popularity[complete.cases(popularity),]
+
+# popularity=subset(popularity, n_unique_tokens<=1 & n_tokens_title>0 & n_tokens_content>0 &
+#                            average_token_length>0 & average_token_length<7 & shares<20000)
+
+```
+
+### Cel
+
+G³ównym zadaniem bêdzie stworzenie modelu regresji, który ma pomóc w wyborze newsów,
+których prowdopodobieñstwo **share'a** bêdzie najwêksze. Dziêki temu redaktorzy bêd¹ wiedzili jak konstruowaæ newsy,
+a tak¿e jakie artyku³y promowaæ na stornie g³ównej,
+
+### Droga do celu
+
+Aby poprawnie zbudowaæ model podzielimy nasz zbiór na podzbiory:
+treningowy, walidacyjny i testowy, w proporcjach 0.6, 0.2, 0.2 odpowiednio.
+Pierwszy bêdziê s³u¿y³ do ekploracji danych i budowy kilku modeli, drugi do wyboru najlepszego z nich, 
+a ostatni tylko do sprawdzenia modelu ostatecznego. £¹cznie do dyspozycji mamy `r nrow(popularity)`,
+jednak¿e po podziale zbiór treningowy bedzie zawiera³ $`r floor(0.6*nrow(popularity))`$ rekordów 
+co jest wystarczaj¹c¹ wielkoœci¹, aby eksploracja mia³a sens.
+Operacjê podzia³u wykonamy jednak dopiero po wstêpnym przygotowaniu danych, fazy,
+w której nie zbierzemy ¿adnych istotnych informacji. 
+Dziêki temu oszczêdzimy sobie pracy przy modyfikacji.
+
+\newpage
+# Podstawowa analiza i przygotowanie danych
+
+Poni¿ej prezentujemy opis danych ze strony Ÿród³owej
+(numeracja kolumn zosta³a zmodyfikowana, aby ³atwiejsze by³o poruszanie siê w obrêbie tego reportu):
+
+```
+Number of Attributes: 61 (58 predictive attributes, 2 non-predictive, 1 goal field)
+Attribute Information:
+
+1. url: URL of the article (non-predictive)
+2. timedelta: Days between the article publication and the dataset acquisition (non-predictive)
+3. n_tokens_title: Number of words in the title
+4. n_tokens_content: Number of words in the content
+5. n_unique_tokens: Rate of unique words in the content
+6. n_non_stop_words: Rate of non-stop words in the content
+7. n_non_stop_unique_tokens: Rate of unique non-stop words in the content
+8. num_hrefs: Number of links
+9. num_self_hrefs: Number of links to other articles published by Mashable
+10. num_imgs: Number of images
+11. num_videos: Number of videos
+12. average_token_length: Average length of the words in the content
+13. num_keywords: Number of keywords in the metadata
+14. data_channel_is_lifestyle: Is data channel 'Lifestyle'?
+15. data_channel_is_entertainment: Is data channel 'Entertainment'?
+16. data_channel_is_bus: Is data channel 'Business'?
+17. data_channel_is_socmed: Is data channel 'Social Media'?
+18. data_channel_is_tech: Is data channel 'Tech'?
+19. data_channel_is_world: Is data channel 'World'?
+20. kw_min_min: Worst keyword (min. shares)
+21. kw_max_min: Worst keyword (max. shares)
+22. kw_avg_min: Worst keyword (avg. shares)
+23. kw_min_max: Best keyword (min. shares)
+24. kw_max_max: Best keyword (max. shares)
+25. kw_avg_max: Best keyword (avg. shares)
+26. kw_min_avg: Avg. keyword (min. shares)
+27. kw_max_avg: Avg. keyword (max. shares)
+28. kw_avg_avg: Avg. keyword (avg. shares)
+29. self_reference_min_shares: Min. shares of referenced articles in Mashable
+30. self_reference_max_shares: Max. shares of referenced articles in Mashable
+31. self_reference_avg_sharess: Avg. shares of referenced articles in Mashable
+32. weekday_is_monday: Was the article published on a Monday?
+33. weekday_is_tuesday: Was the article published on a Tuesday?
+34. weekday_is_wednesday: Was the article published on a Wednesday?
+35. weekday_is_thursday: Was the article published on a Thursday?
+36. weekday_is_friday: Was the article published on a Friday?
+37. weekday_is_saturday: Was the article published on a Saturday?
+38. weekday_is_sunday: Was the article published on a Sunday?
+39. is_weekend: Was the article published on the weekend?
+40. LDA_00: Closeness to LDA topic 0
+41. LDA_01: Closeness to LDA topic 1
+42. LDA_02: Closeness to LDA topic 2
+43. LDA_03: Closeness to LDA topic 3
+44. LDA_04: Closeness to LDA topic 4
+45. global_subjectivity: Text subjectivity
+46. global_sentiment_polarity: Text sentiment polarity
+47. global_rate_positive_words: Rate of positive words in the content
+48. global_rate_negative_words: Rate of negative words in the content
+49. rate_positive_words: Rate of positive words among non-neutral tokens
+50. rate_negative_words: Rate of negative words among non-neutral tokens
+51. avg_positive_polarity: Avg. polarity of positive words
+52. min_positive_polarity: Min. polarity of positive words
+53. max_positive_polarity: Max. polarity of positive words
+54. avg_negative_polarity: Avg. polarity of negative words
+55. min_negative_polarity: Min. polarity of negative words
+56. max_negative_polarity: Max. polarity of negative words
+57. title_subjectivity: Title subjectivity
+58. title_sentiment_polarity: Title polarity
+59. abs_title_subjectivity: Absolute subjectivity level
+60. abs_title_sentiment_polarity: Absolute polarity level
+61. shares: Number of shares (target)
+```
+
+Tak jak wczeœniej wspomnieliœmy, do dyspozycji mamy $`r floor(0.6*nrow(popularity))`$ obserwacji
+`r ncol(popularity)` zmiennych. Zmienne mo¿emy podzieliæ na predykcyjne (s³u¿ace do budowy modelu),
+niepredykcyjne oraz przewidywane (nie³adne t³umaczenia zngielskich fraz *predictive attributes*,
+*non-predictive*, *goal field*). Pierwszych mamy 58, drugich 2 (dni od publikacji i URL)
+oraz jedn¹ wartoœæ do zamodelowania (iloœæ udostêpnieñ).
+
+Dane mo¿emy podzieliæ na nastêpuj¹ce klasy:
+
++---------------------+------------------------------------------------------------------+
+| Klasa               | Charakterystyki                                                  |
++=====================+==================================================================+
+| Wyrazy              | Liczba s³ów w tytule/artykule;                                   |
+|                     | Œrednia d³. wyrazu;                                              |
+|                     | Wspó³czynnik unikalnoœci/ci¹g³oœci artyku³u                       |
++---------------------+------------------------------------------------------------------+
+| Linki               | Liczba linków; Liczba linków do innych artyku³ów na Mashable.com |
++---------------------+------------------------------------------------------------------+
+| Media               | Liczba zdjêæ/wideo                                               |
++---------------------+------------------------------------------------------------------+
+| Czas                | Data, Dzieñ tygodnia                                             |
++---------------------+------------------------------------------------------------------+
+| S³owa kluczowe      | Liczba s³ów kluczowych;                                          |
+|                     | Najgorsze/najlepsze/œrednie s³owa kluczowe (#udostêpnieñ);       |
+|                     | Kategoria                                                        |
++---------------------+------------------------------------------------------------------+
+|  NLP                | Bliskoœæ do kategorii LDA;                                       |
+| (Przetwarzanie      | Nacechowanie/subiektywnoœæ tytu³u/artyku³u;                      |
+| jêzyka naturalnego) | Wspó³czynnik i stopieñ negatywnych/pozytywnych wyrazów;          |
+|                     | Bezwzglêdny poziom nacechowania/subiektywnoœci                   |
++---------------------+------------------------------------------------------------------+
+| CEL                 | Liczba udostêpnieñ                                               |
++---------------------+------------------------------------------------------------------+
+
+W kolejnych rozdzia³ach bêdziemy poruszaæ wsród tych klas, ka¿d¹ przeanalizujemy oddzielnie 
+
+### Przygotowanie i usuniêcie niepotrzebnych danych
+
+Rozpoczynamy od przygotowania danych. Przyjrzyjmy siê pierwszym dwóm kolumnom, 
+zawieraj¹ one informacje o adresie URL i
+liczbie dni od opublikowania artyku³u do zebrania danych:
+
+```{r URL, results='asis'}
+
+kable(head(popularity)[1:2], caption="url & timedelta")
+
+```
+
+Z adresu moglibyœmy wyci¹gn¹æ datê publikacji oraz tytu³ (lub skrót tytu³u).
+O ile pierwsza informacja mo¿e nam siê przydaæ (przyk³adowo w grudniu newsy o nowinkach technologicznych
+mog¹ byæ bardziej popularne - prezenty), o tyle tytu³ na nic nam siê nie zda - nie bedziemy korzystaæ z narzedzi,
+które pozwolily³yby znaków. :)leŸæ najpopularniejsze s³owa kluczowe. W zamian posiadamy  dane na temat tytu³u
+(m. in. kolumny 56-59). Informacje o "chwytliwoœci" tytu³u mog³byby byæ to bardzo pomocne,
+gdy¿ samo klikniêcie w artyku³ na stronie g³ównej przez czytelnika jest ju¿ jakimœ sukcesem.
+Tutu³ powinien przyci¹gaæ, dlatego w ostatnich latach mamy tak wielki wysyp, znienawidzonych przez wszystkich,
+tzw. *Catchy tytu³ów*.
+
+Zauwa¿my, ¿e kolumny od 32 do 38 zawieraj¹ informacjê, w jakim dniu tygodnia artyku³ zosta³ opublikowany,
+mo¿emy j¹ zamieœciæ w jednej kolumnie.
+
+Podobnie mo¿emy zrobiæ dla kategorii, jednak¿e najpier musimy sprawdziæ, czy nie ma artyku³ów nale¿¹cych do dwóch
+kana³ów jednoczeœnie:
+
+```{r channelCheck, echo=TRUE}
+
+nrow(filter(popularity, data_channel_is_lifestyle+data_channel_is_entertainment+data_channel_is_bus+
+                data_channel_is_socmed + data_channel_is_tech + data_channel_is_world!=1))
+nrow(filter(popularity, data_channel_is_lifestyle+data_channel_is_entertainment+data_channel_is_bus+
+                data_channel_is_socmed + data_channel_is_tech + data_channel_is_world==0))
+
+nrow(filter(popularity, data_channel_is_lifestyle+data_channel_is_entertainment+
+                data_channel_is_bus+data_channel_is_socmed + data_channel_is_tech + data_channel_is_world>1))
+
+```
+
+Okazuje siê, ¿e spora liczba tekstów nie jest przypisana do ¿adnej z kategorii,
+jednak nie ma artyku³ów które przypisane maj¹ dwa kana³y, wiêc nasza operacja jest legalna.
+
+Po wykonaniu tych wszystkich operacji podzielimy dane na zbiór treningowy, walidacyjny i testowy.
+
+```{r dataManip}
+
+# Kategoria
+popularity$data_channel<-"None"
+popularity$data_channel[which(popularity$data_channel_is_lifestyle == 1)]<-"Lifestyle"
+popularity$data_channel[which(popularity$data_channel_is_entertainment == 1)]<-"Entertainment"
+popularity$data_channel[which(popularity$data_channel_is_bus == 1)]<-"Business"
+popularity$data_channel[which(popularity$data_channel_is_socmed == 1)]<-"Social Media"
+popularity$data_channel[which(popularity$data_channel_is_tech == 1)]<-"Tech"
+popularity$data_channel[which(popularity$data_channel_is_world == 1)]<-"World"
+
+# Dzieñ tygodnia
+popularity$weekday<-NA
+popularity$weekday[which(popularity$weekday_is_monday == 1)]<-"Monday"
+popularity$weekday[which(popularity$weekday_is_tuesday == 1)]<-"Tuesday"
+popularity$weekday[which(popularity$weekday_is_wednesday == 1)]<-"Wednesday"
+popularity$weekday[which(popularity$weekday_is_thursday == 1)]<-"Thursday"
+popularity$weekday[which(popularity$weekday_is_friday == 1)]<-"Friday"
+popularity$weekday[which(popularity$weekday_is_saturday == 1)]<-"Saturday"
+popularity$weekday[which(popularity$weekday_is_sunday == 1)]<-"Sunday"
+
+#Subsetting&reorder
+popularity=popularity[,c(1:13, 62, 20:31, 63, 39:61)]
+
+# Data
+date_pattern="(\\d+)/(\\d+)/(\\d+)"
+
+popularity=cbind(year=str_match(popularity$url, date_pattern)[,2],
+                      month=str_match(popularity$url, date_pattern)[,3],
+                      day=str_match(popularity$url, date_pattern)[,4], popularity)
+popularity=subset(popularity, select=-timedelta)
+
+set.seed(23)
+train=sample(1:nrow(popularity),floor(0.6*nrow(popularity)))
+popularityTrain=popularity[train,]
+popularityRest=popularity[-train,]
+query=sample(1:nrow(popularityRest),floor(0.5*nrow(popularityRest)))
+popularityQuery=popularityRest[query,]
+popularityTest=popularityRest[-query,]
+
+popularityTrain=popularityTrain[with(popularityTrain, order(-shares)), ]
+popularityQuery=popularityQuery[with(popularityQuery, order(-shares)), ]
+popularityTest=popularityTest[with(popularityTest, order(-shares)), ]
+
+```
+
+Nowy opis bêdzie wygl¹da³ nastêpuj¹co
+(czy rok to argument predykcyjny, to kwestia sporna, ale puki co pozostawmy go w tej grupie): 
+
+```
+Number of Attributes: 52 (51 predictive attributes, 1 goal field)
+Attribute Information:
+
+1. year: Year of publication
+2. month: Month of publication
+3. day : Day of publication
+4. url: URL of the article (non-predictive)
+5. n_tokens_title: Number of words in the title
+6. n_tokens_content: Number of words in the content
+7. n_unique_tokens: Rate of unique words in the content
+8. n_non_stop_words: Rate of non-stop words in the content
+9. n_non_stop_unique_tokens: Rate of unique non-stop words in the content
+10. num_hrefs: Number of links
+11. num_self_hrefs: Number of links to other articles published by Mashable
+12. num_imgs: Number of images
+13. num_videos: Number of videos
+14. average_token_length: Average length of the words in the content
+15. num_keywords: Number of keywords in the metadata
+16. data_channel: 'Lifestyle', 'Entertainment', 'Business', 'Social Media', 'Tech', 'World' or NA?
+17. kw_min_min: Worst keyword (min. shares)
+18. kw_max_min: Worst keyword (max. shares)
+19. kw_avg_min: Worst keyword (avg. shares)
+20. kw_min_max: Best keyword (min. shares)
+21. kw_max_max: Best keyword (max. shares)
+22. kw_avg_max: Best keyword (avg. shares)
+23. kw_min_avg: Avg. keyword (min. shares)
+24. kw_max_avg: Avg. keyword (max. shares)
+25. kw_avg_avg: Avg. keyword (avg. shares)
+26. self_reference_min_shares: Min. shares of referenced articles in Mashable
+27. self_reference_max_shares: Max. shares of referenced articles in Mashable
+28. self_reference_avg_sharess: Avg. shares of referenced articles in Mashable
+29. weekday: Weekday of publishing
+30. is_weekend: Was the article published on the weekend?
+31. LDA_00: Closeness to LDA topic 0
+32. LDA_01: Closeness to LDA topic 1
+33. LDA_02: Closeness to LDA topic 2
+34. LDA_03: Closeness to LDA topic 3
+35. LDA_04: Closeness to LDA topic 4
+36. global_subjectivity: Text subjectivity
+37. global_sentiment_polarity: Text sentiment polarity
+38. global_rate_positive_words: Rate of positive words in the content
+39. global_rate_negative_words: Rate of negative words in the content
+40. rate_positive_words: Rate of positive words among non-neutral tokens
+41. rate_negative_words: Rate of negative words among non-neutral tokens
+42. avg_positive_polarity: Avg. polarity of positive words
+43. min_positive_polarity: Min. polarity of positive words
+44. max_positive_polarity: Max. polarity of positive words
+45. avg_negative_polarity: Avg. polarity of negative words
+46. min_negative_polarity: Min. polarity of negative words
+47. max_negative_polarity: Max. polarity of negative words
+48. title_subjectivity: Title subjectivity
+49. title_sentiment_polarity: Title polarity
+50. abs_title_subjectivity: Absolute subjectivity level
+51. abs_title_sentiment_polarity: Absolute polarity level
+52. shares: Number of shares (target)
+```    
+
+---
+
+W kolejnych podrozdzia³ach przygl¹dniemy siê ka¿dej klasie zmiennych, jak¹ otrzymaliœmy do analizy.
+Byæ mo¿e w wielu miejscach jest ona nie potrzebna, lecz pozwala ona na wyobra¿enie sobie jak kszta³tuj¹ 
+siê dane zmienna, czy istniej¹ miedzy nimi proste zale¿noœci. Nie bêdzie zastanawiaæ siê 
+jakiego stopnia krzywa pasowa³aby do danych, gdy¿ przy tak du¿ej iloœci zmiennych
+zaje³oby nam to kilkadziesi¹t stron...
+
+---
+
+### **shares**
+
+Przyjrzyjmy siê histogramowi kolumny **shares**:
+
+```{r sharesDistributionFull, dpi = 50}
+
+ggplot(popularityTrain, aes(x=shares)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(shares), color="green"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(shares), color="blue"), linetype="dashed", size=1) +
+    labs(title="Histogram", x="Udostêpnienia", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(popularityTrain$shares)),
+                    paste('Œrednia =', myround(mean(popularityTrain$shares)), 2))) +
+    annotate("text", x=500000, y=16000,
+             label=paste("Odchylenie std. =", myround(sqrt(var(popularityTrain$shares)), 2))) +
+    annotate("text", x=500000, y=15000,
+             label=paste("Skoœnoœæ =", myround(skewness(popularityTrain$shares), 2))) +
+    annotate("text", x=500000, y=14000,
+             label=paste("Kurtoza =", myround(kurtosis(popularityTrain$shares), 2)))
+
+```
+
+Z racji bardzo odstaj¹cych odserwacji, niewiele widaæ na powy¿szym histogramie. Miara kurtozy,
+mówi¹ca o odserwacjach odstaj¹cych jest bardzo wysoka, ró¿nica pomiêdzy median¹, a œredni¹ te¿ jest znaków. :)cz¹ca.
+W stosunku do œredniej czy mediany odchylenie standardowe te¿ jest bardzo wysokie.
+Œwiadczy to o wystepowaniu mocno odstaj¹cych obserwacji w zbiorze danych.
+
+Usuñmy najwiêksz¹ obserwacjê i ponownie przyjrzyjmy siê histogramowi:
+
+```{r sharesDistribution1, dpi = 50}
+
+ggplot(popularityTrain[-1,], aes(x=shares)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(shares), color="blue"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(shares), color="green"), linetype="dashed", size=1) +
+    labs(title="Histogram bez najwiêkszej obserwacji", x="Udostêpnienia", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(popularityTrain[-1,]$shares)),
+                    paste('Œrednia =', myround(mean(popularityTrain[-1,]$shares)), 2))) +
+    annotate("text", x=400000, y=16000,
+             label=paste("Odchylenie std. =", myround(sqrt(var(popularityTrain[-1,]$shares)), 2))) +
+    annotate("text", x=400000, y=15000,
+             label=paste("Skoœnoœæ =", myround(skewness(popularityTrain[-1,]$shares), 2))) +
+    annotate("text", x=400000, y=14000,
+             label=paste("Kurtoza =", myround(kurtosis(popularityTrain[-1,]$shares), 2)))
+
+```
+
+Ju¿ po usuniêciu jedne obserwacji statystyki istotnie zmieni³y swoje wartoœci!Prawdopodobnie by³
+to tzw. "hit internetu" Nadal niewiele widzimy... Tym razem usuñmy kolejne dziewiêæ obserwacji 
+(w sumie wyrzuciliœmy najwiêksz¹ dziesi¹tkê):
+
+```{r sharesDistribution10, dpi = 50}
+
+ggplot(popularityTrain[-c(1:10),], aes(x=shares)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(shares), color="green"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(shares), color="blue"), linetype="dashed", size=1) +
+    labs(title="Histogram bez 10 najwiêkszych obserwacji", x="Udostêpnienia", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(popularityTrain[-c(1:10),]$shares)),
+                    paste('Œrednia =', myround(mean(popularityTrain[-c(1:10),]$shares)),2))) +
+    annotate("text", x=125000, y=13000,
+             label=paste("Odchylenie std. =",
+                         myround(sqrt(var(popularityTrain[-c(1:10),]$shares)), 2))) +
+    annotate("text", x=125000, y=12000,
+             label=paste("Skoœnoœæ =", myround(skewness(popularityTrain[-c(1:10),]$shares), 2))) +
+    annotate("text", x=125000, y=11000,
+             label=paste("Kurtoza =", myround(kurtosis(popularityTrain[-c(1:10),]$shares), 2)))
+
+```
+
+Histogram nie jest ju¿ tak skumulowany, statystyki maj¹ rozs¹dniejsze wartoœci, 
+odchylenie standardowe zmala³o o 25% w stosunku do stanu pocz¹tkowego, kurtoza zmala³a siedmiokrotnie, 
+œrednia zmieni³a siê nie wiele. Oczywiœcie zale¿y nam na pozostawieniu jak najwiekszej liczby obserwacji,
+ale widzimy jak du¿y wp³yw na dane mia³y usuniête dane, mog¹ one negatywnie dzia³aæ na nasz model
+i nale¿y o tym pamiêtaæ w przysz³oœci.
+
+Przyjrzyjmy siê usuniêtym artyku³om:
+
+```{r 10deletedArtices, results='asis'}
+
+kable(popularityTrain[1:10,c(4,52)], caption="Dziesiêæ najpopularniejszych artyku³ów")
+
+```
+
+Trzeba pamiêtaæ jaki jest ostateczny cel naszych rozwa¿añ - nie mamy przewidzieæ jaki artyku³ zostanie 
+*œwiêtym gralem* sieci spo³ecznoœciowych danego dnia, lecz jakie newsy nale¿y umieœciæ na stronie g³ównej,
+aby zwiêkszyæ liczbê odwiedzin. Artyku³y powy¿ej mo¿emy traktowaæ jak sensacjê,
+która i tak by siê obroni³a przy pomocy odrobiny szczêœcia i *viral effect*.
+Zwróæmy te¿ uwagê, jak du¿a jest ró¿nica pomiêdzy liczb¹ udostêpnieñ powy¿szych artyku³ów.
+
+Przyjrzyjmy siê jeszcze co siê stanie po odrzuceniu 100, 500 i 1000-cu najwiêkszych obserwacji:
+
+```{r sharesDistribution100, dpi = 50}
+ggplot(popularityTrain[-c(1:100),], aes(x=shares)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(shares), color="green"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(shares), color="blue"), linetype="dashed", size=1) +
+    labs(title="Histogram bez 100 najwiêkszych obserwacji", x="Udostêpnienia", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(popularityTrain[-c(1:100),]$shares)),
+                    paste('Œrednia =', myround(mean(popularityTrain[-c(1:100),]$shares)), 2))) +
+    annotate("text", x=35000, y=7500,
+             label=paste("Odchylenie std. =",
+                         myround(sqrt(var(popularityTrain[-c(1:100),]$shares)), 2))) +
+    annotate("text", x=35000, y=7000,
+             label=paste("Skoœnoœæ =", myround(skewness(popularityTrain[-c(1:100),]$shares), 2))) +
+    annotate("text", x=35000, y=6500,
+             label=paste("Kurtoza =", myround(kurtosis(popularityTrain[-c(1:100),]$shares), 2)))
+
+```
+
+Rozk³ad zaczyna ju¿ byæ zauwa¿alny, widzimy, ¿e najpopularniejsze s¹ artyku³ od 1500 do 3000 udostepnieñ.
+Przy takiej liczbie odrzuconych obserwacji wartoœæ maksymalna przewidywanej cechy to `r popularityTrain[101,63]`
+
+Dla porz¹dku odrzuæmy 500 najwiêkszych rekordów:
+
+```{r sharesDistribution500, dpi = 50}
+ggplot(popularityTrain[-c(1:500),], aes(x=shares)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(shares), color="green"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(shares), color="blue"), linetype="dashed", size=1) +
+    labs(title="Histogram bez 500 najwiêkszych obserwacji", x="Udostêpnienia", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(popularityTrain[-c(1:500),]$shares)),
+                    paste('Œrednia =', myround(mean(popularityTrain[-c(1:500),]$shares)), 2))) +
+    annotate("text", x=12500, y=5250,
+             label=paste("Odchylenie std. =",
+                         myround(sqrt(var(popularityTrain[-c(1:500),]$shares)), 2))) +
+    annotate("text", x=12500, y=5000,
+             label=paste("Skoœnoœæ =", myround(skewness(popularityTrain[-c(1:500),]$shares), 2))) +
+    annotate("text", x=12500, y=4750,
+             label=paste("Kurtoza =", myround(kurtosis(popularityTrain[-c(1:500),]$shares), 2)))
+
+```
+
+Zbiór obciety o 500 obserwacji mo¿e byæ ju¿ zbyt mocno okrojony, aby zbudowaæ rozs¹dny model,
+ale pozwala nam on przyj¿eæ siê jak dok³adnie wygl¹da rozk³ad liczby udostêpnieñ dla mniejszych wartoœci.
+We¿my pod uwagê nasz cel, na powy¿szym histogramie widzimy, ¿e górna granica udostêpnieñ stosunkowo
+rzadko przekracza 10000 (dok³adnie w 
+`r myround(100*length(subset(popularityTrain, shares>10000)[,1])/length(popularityTrain[,1]))`% przypadków)
+gdyby uda³o nam siê przesunaæ j¹ np. do 15000 to by³by to du¿y sukces.
+
+Dla porz¹dku rozpatrzmy jeszcze najbardziej okrojony zbiór:
+
+```{r sharesDistribution1000, dpi = 50}
+ggplot(popularityTrain[-c(1:1000),], aes(x=shares)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(shares), color="green"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(shares), color="blue"), linetype="dashed", size=1) +
+    labs(title="Histogram bez 1000 najwiêkszych obserwacji", x="Udostêpnienia", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(popularityTrain[-c(1:1000),]$shares)),
+                    paste('Œrednia =', myround(mean(popularityTrain[-c(1:1000),]$shares)),2))) +
+    annotate("text", x=8000, y=4000,
+             label=paste("Odchylenie std. =",
+                         myround(sqrt(var(popularityTrain[-c(1:1000),]$shares)), 2))) +
+    annotate("text", x=8000, y=3750,
+             label=paste("Skoœnoœæ =", myround(skewness(popularityTrain[-c(1:1000),]$shares), 2))) +
+    annotate("text", x=8000, y=3500,
+             label=paste("Kurtoza =", myround(kurtosis(popularityTrain[-c(1:1000),]$shares), 2)))
+
+```
+
+Powy¿ej widzimy histogram po odrzuceniu `r myround(100*(1000/length(popularityTrain[,1])))`% obserwacji.
+
+Ustalamy, ¿e udrzucamy 100 najwiêkszych obserwacji, jest to na tyle ma³a liczba, ¿e mo¿na siê im przyjrzeæ rêcznie.
+Przeanalizowaæ czy mia³y w sobie coœ wyj¹tkowego, czy to zas³uga tematyki lub "chwytliwego pióra".
+
+```{r topSharesDelete}
+
+popularityTrain=popularityTrain[-c(1:1200),]
+popularityQuery=popularityQuery[-c(1:400),]
+popularityTest=popularityTest[-c(1:400),]
+
+```
+
+Na koñcu u¿yjemy transformacji Boxa-Coxa, najpierw sprawdŸmy jaka wartoœc lamby najlepiej zsymetryzuje dane:
+
+```{r bc, echo=TRUE}
+
+bc=MASS::boxcox(shares~1,data=popularityTrain)
+
+```
+
+Nastepnie narysujemy rozk³ad **share'ów** po transformacji:
+
+```{r sharesDistributionLog, dpi = 50}
+
+lambda=bc$x[which.max(bc$y)]
+
+ggplot(popularityTrain, aes(x=bcPower(shares, lambda))) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(bcPower(shares, lambda)), color="green"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(bcPower(shares, lambda)), color="blue"), linetype="dashed", size=1) +
+    labs(title="Histogram", x="Udostêpnienia", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', myround(median(bcPower(popularityTrain$shares, lambda)), 2)),
+                    paste('Œrednia =', myround(mean(bcPower(popularityTrain$shares, lambda))), 2)))
+
+popularityTrain$shares=bcPower(popularityTrain$shares, lambda)
+popularityQuery$shares=bcPower(popularityQuery$shares, lambda)
+popularityTest$shares=bcPower(popularityTest$shares, lambda)
+
+```
+
+
+### Wyrazy
+
+Pierwsze kolumny zawieraj¹ informacjê o budowie artyku³u, przypomnijmy:
+
+```
+... 
+5. n_tokens_title: Number of words in the title
+6. n_tokens_content: Number of words in the content
+7. n_unique_tokens: Rate of unique words in the content
+8. n_non_stop_words: Rate of non-stop words in the content
+9. n_non_stop_unique_tokens: Rate of unique non-stop words in the content
+...
+14. average_token_length: Average length of the words in the content
+...
+```
+
+S¹ to suche fakty, bez analizy nacechowania samych s³ów, te informacje s¹ ujête w kolejnych kolumnach.
+SprawdŸmy jak wygl¹da ich rozk³ad:
+
+```{r tokensDistribution, dpi = 50}
+
+tokens=popularityTrain[,c(5:7,14,52)]
+ggpairs(tokens)
+
+```
+
+Bardzo zastaniawia obserwacja z du¿¹ wartoœci¹ **n_unique_tokens**, sprawdŸmy j¹:
+
+```{r topUniqueTokens, results='asis'}
+
+kable(head(popularityTrain[with(popularityTrain, order(-n_unique_tokens)), c(5:7,14,52)]),
+      caption="Dziesiêæ najpopularniejszych artyku³ów")
+
+```
+
+Jak widaæ rekord numer **31038** jest niepoprawny, w takim razie usuwamy tê obserwacjê.
+
+Pamiêtajmy, ¿e nasz dane zosta³y spreparowane przy pomocy metod *machine learningu*, wiêc mog³y siê tam wkraœæ blêdy,
+na poziomie samej analizy, ale te¿ póŸniej, na poziomie przygotowania. 
+
+Usuniemy tak¿e rekordy, które posiadaj¹ odstaj¹ce od œredniej wartoœci, w naszym przypadku 
+**average_token_length** wieksze od siedmiu.
+
+Przygl¹dnijmy siê rozk³adom klasy po usuniêciu, naszym zdaniem, b³êdnych lub odstaj¹cych rekordów:
+
+```{r tokensDistributionBis, dpi = 50}
+
+# head(popularityTrain[with(popularityTrain, order(-n_tokens_title)), c(5,6,7,14,52)])
+popularityTrain=subset(popularityTrain, 
+                       n_unique_tokens<=1 & n_tokens_title>0 & n_tokens_content>0 & 
+                           average_token_length>0 &average_token_length<7)
+
+tokens=popularityTrain[,c(5,6,7,14,52)]
+ggpairs(tokens)
+
+rm(tokens)
+
+popularityQuery=subset(popularityQuery, 
+                       n_unique_tokens<=1 & n_tokens_title>0 & n_tokens_content>0 & 
+                           average_token_length>0 &average_token_length<7)
+popularityTest=subset(popularityTest, 
+                       n_unique_tokens<=1 & n_tokens_title>0 & n_tokens_content>0 & 
+                           average_token_length>0 &average_token_length<7)
+
+```
+
+Go³ym okiem nie widaæ ju¿ wiekszych anomalii.
+Spogl¹daj¹ na najni¿szy wiersz powyzszej kraty widaæ rozk³ad **share'ów** od elementów klasy, 
+ciê¿ko dopatrzeæ siê tutaj wiêkszych zale¿noœci... Widzimy jedynie, ¿e rozk³ad jest skumulowany wokó³
+œredniej wartoœci ka¿dego ze wspó³czynników.
+
+### Odnoœniki
+
+Piêæ kolumn niesie informacje o linkach w artykule:
+
+```
+...
+10. num_hrefs: Number of links
+11. num_self_hrefs: Number of links to other articles published by Mashable
+...
+26. self_reference_min_shares: Min. shares of referenced articles in Mashable
+27. self_reference_max_shares: Max. shares of referenced articles in Mashable
+28. self_reference_avg_sharess: Avg. shares of referenced articles in Mashable
+...
+```
+
+#### Linki
+
+Sprawd¿my jak ma siê rozk³ad dwóch pierwszych:
+
+```{r linksDistribution, dpi = 50}
+
+links=popularityTrain[,c(10,11,52)]
+ggpairs(links)
+
+```
+
+Oczywiœcie linki do Mashable powinny byæ podzbiorem linków w ogólnoœci, sprawd¿my czy tak rzeczywiœcie jest:
+
+```{r linksSubsetlength, echo=TRUE}
+
+subset(popularityTrain, num_hrefs<num_self_hrefs)[,c(4,52)]
+
+```
+
+Wszytko siê zgadza, tabela jest pusta.
+
+Z racji sporych obserwacji odstaj¹cych usuniemy te najwiêksze, któ¿ umieszcza powy¿ej 100
+linków w przeciêtnym artykule? Usuniemy te¿ te, które maj¹ ponad 45 linków do Mashable.
+
+```{r linksDistributionBis, dpi = 50}
+
+popularityTrain=subset(popularityTrain, num_hrefs<=100 & num_self_hrefs<=45)
+
+links=popularityTrain[,c(10,11,52)]
+ggpairs(links)
+
+rm(links)
+
+popularityQuery=subset(popularityQuery, num_hrefs<=100 & num_self_hrefs<=45)
+popularityTest=subset(popularityTest, num_hrefs<=100 & num_self_hrefs<=45)
+
+```
+
+Ponownie nie widzimy wiêkszych zalo¿noœci pomiêdzy liczb¹ odnoœnikóW, a liczb¹ **share'ów**...
+
+#### Referencje
+
+Teraz sprawd¿my, jak rozk³adaj¹ siê udostêpnienia artuku³ów do których ten ukryty pod danym rekordem:
+
+```{r referenceDistribution, dpi = 50}
+
+references=popularityTrain[,c(26:28,52)]
+ggpairs(references)
+
+rm(references)
+
+```
+
+Oczywiœcie nie dziwi fakt, ¿e obserwacje s¹ bardzo mocno skorelowane, ale niestety jedynie pomiêdzy sob¹, 
+korelacja z iloœci¹ udostêpnien nie jest ju¿ tak widoczna.
+Jest jasne, jeœli ktoœ natrafi na bardziej interesuj¹cy artyku³, to w³asnie na nim siê skupi. 
+Gdybyœmy posiadali statystykê odwrotn¹ tzn. z jakich artyku³ów mo¿emy przejœc od obserwowanego, wtedy,
+byæ mo¿e, moglibyœmy coœ na tej podstawie wyci¹gn¹æ.
+
+### Media
+
+Informacja o mediach uzytych w artykule jest zapisana w dwóch kolumnach:
+```
+...
+12. num_imgs: Number of images
+13. num_videos: Number of videos
+...
+```
+
+Sprawd¿my jak ma siê ich rozk³ad:
+
+```{r mediaDistribution, dpi = 50}
+
+media=popularityTrain[,c(12,13,52)]
+ggpairs(media)
+
+```
+
+Po raz kolejny ograniczym nasz zbiór, wiêcej ni¿ 40 wideo oraz wiêcej ni¿ 75 zdjêæ w artykule,
+to ju¿ bardzo du¿o, dlatego "przytniemy" nasz zbiór powy¿ej tych wartoœci.
+
+```{r mediaDistributionBis, dpi = 50}
+
+popularityTrain=subset(popularityTrain, num_imgs<75 & num_videos<40)
+
+media=popularityTrain[,c(12,13,52)]
+ggpairs(media)
+
+rm(media)
+
+```
+
+Jako, ¿e dane pozostawiaj¹ wiele do ¿yczenia, du¿a iloœæ obserwacji dla pewnych wielkoœci
+**num_videos** oraz **num_imgs** byæ jest konsekwencj¹ b³êdów, ale nie mo¿emy tego sprawdziæ.
+
+Nie widzimy du¿ej korelacji pomiêdzy liczb¹ medii, a liczb¹ udostêpnieñ.
+
+### Czas
+
+W kolejnej klasie przeanalizujemy cztery kolumny z dwoma informacjami:
+
+```
+1. year: Year of publication
+2. month: Month of publication
+3. day : Day of publication
+...
+29. weekday: Weekday of publishing
+30. is_weekend: Was the article published on the weekend?
+...
+```
+
+```{r timePreparation}
+
+time=as.Date(with(popularityTrain, paste(year, month, day, sep="-")), "%Y-%m-%d")
+time=cbind(time, popularityTrain[,c(29,30,52)])
+time$is_weekend=c("Nie", "Tak")[time$is_weekend+1]
+
+```
+
+Przyjrzyjmy siê jak wygl¹da zale¿noœci udostêpnieñ od tych informacji:
+
+#### Data
+
+```{r date, dpi = 50}
+
+ggplot(time, aes(x=time, y=shares)) +
+    geom_point() +
+    labs(title="Data vs Udostêpniania", x="Data", y="Liczba Udostêpnieñ") +
+    geom_smooth()
+
+```
+
+Nie widzimy ¿adne zale¿noœci, mog³oby siê wydawaæ, ¿e z czasem serwis Mashable.com 
+stawa³ siê coraz popularniejszy, jednak¿e nie jest to prawd¹.
+Dane równomiernie siê rozk³adaj¹.
+
+#### Dzieñ tygodnia
+
+```{r weekday, dpi = 50}
+
+ggplot(time, aes(x=reorder(weekday, shares), y=shares)) +
+    geom_jitter() +
+    geom_boxplot(alpha=.925) +
+    labs(title="Dzieñ tygodnia vs Udostêpnienia", x="Dzieñ tygodnia", y="Liczba udostêpnieñ") +
+    coord_flip()
+
+```
+
+Powy¿szy wykres jes uporzadkowany, tzn. najwy¿ej s¹ dni o najwiêkszej, œredniej iloœci **share'ów**. 
+Zgodne jest to z intuicj¹, ¿e w weekendy ludzie spêdzaj¹ wiêcej przed komputerem i iloœc udostêpnieñ roœnie. 
+Najni¿sza jest w œrodku tygodnia, lecz to wtedy pojawia siê wiêcej obserwacji odstaj¹cych.
+
+Sprawd¿my jeszcze jak siê kszta³tuj¹ dane przy podziale na weekend oraz reszte tygodnia:
+
+```{r weekend, dpi = 50}
+
+ggplot(time, aes(x=reorder(is_weekend, shares), y=shares)) +
+    geom_jitter() +
+    geom_boxplot(alpha=.925) +
+    labs(title="Weekend vs Udostêpnienia", x="Czy weekend?", y="Liczba udostêpnieñ") +
+    coord_flip()
+
+rm(time)
+
+```
+
+Tutaj potwierdzaj¹ siê nasze wczesniejsze obserwacje, mo¿emy je podsumowaæ: 
+
+* Jeœli chcemy uzyskaæ wysok¹ liczbê udostêpnieñ artyku³u, ale nie jest on sensacj¹, to opublikujmy go w weekend
+* Jeœli natomiast jest to sensacja albo coœ, co mo¿e staæ siê "wirusem" sieci spo³ecznoœciowych, 
+to opublikumy to w tygodniu 
+
+Póki co nie mo¿emy nic wiêcej stwierdziæ.
+
+### S³owa kluczowe
+
+Jedna z dwóch, najbardziej licznych klas:
+
+```
+...
+15. num_keywords: Number of keywords in the metadata
+16. data_channel: 'Lifestyle', 'Entertainment', 'Business', 'Social Media', 'Tech', 'World' or NA?
+17. kw_min_min: Worst keyword (min. shares)
+18. kw_max_min: Worst keyword (max. shares)
+19. kw_avg_min: Worst keyword (avg. shares)
+20. kw_min_max: Best keyword (min. shares)
+21. kw_max_max: Best keyword (max. shares)
+22. kw_avg_max: Best keyword (avg. shares)
+23. kw_min_avg: Avg. keyword (min. shares)
+24. kw_max_avg: Avg. keyword (max. shares)
+25. kw_avg_avg: Avg. keyword (avg. shares)
+...
+```
+
+```{r keywordsPreparation}
+
+keywords=popularityTrain[,c(15:25,52)]
+
+```
+
+#### Kana³
+
+Zacznijmy od analizy **data_channel**:
+
+```{r dataChannel, dpi = 50}
+
+ggplot(keywords, aes(x=reorder(data_channel, shares), y=shares)) +
+    geom_jitter() +
+    geom_boxplot(alpha=.925) +
+    labs(title="Kana³ vs Udostêpnienia", x="Kana³", y="Liczba udostêpnieñ") +
+    coord_flip()
+
+```
+
+Najpopularniejszym kana³em sta³ sie... brak kana³u! Takie mamy dane, tyle one nam mówi¹. 
+Prawdopodobnie, gdy autor artyku³u stwierdza³, ¿e bêdzie on popularny to wrzuca³ go na stronê g³ówn¹, bez kana³u. 
+Mo¿emy potwierdziæ, ¿e je¿eli tak faktycznie by³o, to redaktorzy maj¹ poprawne intuicje.
+Wiele wiêcej tutaj nie widzimy.
+
+#### S³owa kluczowe
+
+Przyjrzymy siê rozk³aodwi pozosta³ych zmiennych, lecz najpierw zrobimy to dla "œredniego" s³owa kluczowego i
+wszystkich poziomów udostêpnieñ, nastêpnie dla wszystkich poziomów s³ów kluczowych, ale "œrednich" udostêpnieñ.
+
+```
+... 
+23. kw_min_avg: Avg. keyword (min. shares)
+24. kw_max_avg: Avg. keyword (max. shares)
+25. kw_avg_avg: Avg. keyword (avg. shares)
+...
+```
+
+```{r avgKeyword, dpi = 50}
+
+ggpairs(keywords[,9:12])
+
+```
+
+Zgodnie z tradycj¹: korelacja pomiêdzy trzema pierwszymi zmiennymi wysoka, ale pomiêdzy nimi, 
+a iloœci¹ **share'ów** znikoma... 
+
+Spójrzmy teraz na to z innej strony:
+
+```
+...
+19. kw_avg_min: Worst keyword (avg. shares)
+22. kw_avg_max: Best keyword (avg. shares)
+25. kw_avg_avg: Avg. keyword (avg. shares)
+...
+```
+
+```{r avgShares, dpi = 50}
+
+ggpairs(keywords[,c(5,8,11,12)])
+
+```
+
+Ponownie, niewiele widzimy, mo¿emy zaobserwowac, jak wygl¹da rozk³ad, 
+ale jakakolwiek zale¿noœc pomiêdzy zmiennymi objaœniaj¹cymi, a objaœnian¹ jest nie widoczna go³ym okiem.
+
+Pozosta³a nam jeszcze do sprawdzenia jak na popularnoœæ wp³ywa liczba s³ów kluczowych:
+
+```
+...
+15. num_keywords: Number of keywords in the metadata
+...
+```
+
+```{r numKeywords, dpi = 50}
+
+ggplot(keywords, aes(x=num_keywords, y=shares)) +
+    geom_point() +
+    labs(title="S³owa kluczowe vs Udostêpniania", x="Liczba s³ów kluczowych", y="Liczba Udostêpnieñ") +
+    geom_smooth()
+
+rm(keywords)
+
+```
+
+Widaæ, ¿e co do zasady, artyku³y z ma³¹ iloœci¹ s³ów kluczowych nie s¹ ekstremalnie popularne,
+ale ta zale¿noœæ ginie w ogromie obserwacji jak¹ posiadamy. 
+Jest to zale¿noœæ liniowa o bardzo niskim wspó³czynniku kierunkowym.
+
+### NLP
+
+Pozosta³a nam do analizy najwiêksza klasa dot. jêzyka:
+
+```
+...
+31. LDA_00: Closeness to LDA topic 0
+32. LDA_01: Closeness to LDA topic 1
+33. LDA_02: Closeness to LDA topic 2
+34. LDA_03: Closeness to LDA topic 3
+35. LDA_04: Closeness to LDA topic 4
+36. global_subjectivity: Text subjectivity
+37. global_sentiment_polarity: Text sentiment polarity
+38. global_rate_positive_words: Rate of positive words in the content
+39. global_rate_negative_words: Rate of negative words in the content
+40. rate_positive_words: Rate of positive words among non-neutral tokens
+41. rate_negative_words: Rate of negative words among non-neutral tokens
+42. avg_positive_polarity: Avg. polarity of positive words
+43. min_positive_polarity: Min. polarity of positive words
+44. max_positive_polarity: Max. polarity of positive words
+45. avg_negative_polarity: Avg. polarity of negative words
+46. min_negative_polarity: Min. polarity of negative words
+47. max_negative_polarity: Max. polarity of negative words
+48. title_subjectivity: Title subjectivity
+49. title_sentiment_polarity: Title polarity
+50. abs_title_subjectivity: Absolute subjectivity level
+51. abs_title_sentiment_polarity: Absolute polarity level
+...
+```
+
+#### LDA
+
+LDA - [Latent Dirichlet allocation](https://en.wikipedia.org/wiki/Latent_Dirichlet_allocation), to model,
+który jest wykorzystywany w przetwarzaniu masyznowym jêzyka. Autor zbioru danych nie umieœci³ dok³adnej informacji, 
+co kryje siê pod t¹ informacj¹. Klasycznie przjdŸmy do wykresy *ggpairs*:
+
+```{r LDA, dpi = 50}
+
+lda=popularityTrain[,c(31:35,52)]
+# summary(lda)
+ggpairs(lda)
+
+rm(lda)
+
+```
+
+Klasycznie, nie jesteœmy w stanie go³ym okiem znale¿æ ¿adnych zale¿noœci... 
+Mo¿emy jednak dziêki nim zobaczyæ jak rozk³adaja siê informacje w danej kolumnie.
+
+#### Wydzwiêk 
+
+Najpierw przyjrzymy siê kolumnom 36-41:
+
+```{r polarity, dpi = 50}
+
+polarity=popularityTrain[,c(36:41,52)]
+# summary(polarity)
+ggpairs(polarity)
+
+rm(polarity)
+
+```
+
+Mo¿e warto by by³o bardziej jednoznacznie sklasyfikowaæ artyku³y, na te nacechowane pejoratywnie 
+i na te nacechowane pozytywnie. Niestety nie posiadamy wgl¹du do dokumentacji i nie 
+jesteœmy w stanie bardziej siê przyjrzeæ temu problemowi.
+
+Kolumny 42-47 pominiemy
+
+Przejdziemy do jêzyka tytu³ów, czyli kolumn 48-51:
+
+```{r titlePolarity, dpi = 50}
+
+titles=popularityTrain[,c(48:52)]
+# summary(titles)
+ggpairs(titles)
+
+rm(titles)
+
+```
+
+Widzimy jak rozkladaj¹ siê poszczególne zmienne i jakie przyjmuj¹ wartoœci, lecz zale¿noœci nie s¹ takie oczywiste.
+
+### Podsumowanie
+
+Analizuj¹c wysok¹ korelacjê pewnych zmiennych objaœniaj¹cych, a tak¿e niesion¹ przez nie informacje 
+tworzymy now¹ ramkê danych okrojon¹ z niepotrzebnych (naszym zdaniem) kolumn:
+
+```
+Number of Attributes: 28 (27 predictive attributes, 1 goal field)
+Attribute Information:
+
+1. month: Month of publication
+2. n_tokens_title: Number of words in the title
+3. n_tokens_content: Number of words in the content
+4. n_unique_tokens: Rate of unique words in the content
+5. n_non_stop_words: Rate of non-stop words in the content
+6. n_non_stop_unique_tokens: Rate of unique non-stop words in the content
+7. num_hrefs: Number of links
+8. num_imgs: Number of images
+9. average_token_length: Average length of the words in the content
+10. num_keywords: Number of keywords in the metadata
+11. data_channel: 'Lifestyle', 'Entertainment', 'Business', 'Social Media', 'Tech', 'World' or NA?
+12. kw_avg_max: Best keyword (avg. shares)
+13. kw_avg_avg: Avg. keyword (avg. shares)
+14. self_reference_avg_sharess: Avg. shares of referenced articles in Mashable
+15. is_weekend: Was the article published on the weekend?
+16. LDA_00: Closeness to LDA topic 0
+17. LDA_01: Closeness to LDA topic 1
+18. LDA_02: Closeness to LDA topic 2
+19. LDA_03: Closeness to LDA topic 3
+20. LDA_04: Closeness to LDA topic 4
+21. global_subjectivity: Text subjectivity
+22. global_rate_positive_words: Rate of positive words in the content
+23. global_rate_negative_words: Rate of negative words in the content
+24. avg_positive_polarity: Avg. polarity of positive words
+25. avg_negative_polarity: Avg. polarity of negative words
+26. abs_title_subjectivity: Absolute subjectivity level
+27. abs_title_sentiment_polarity: Absolute polarity level
+28. shares: Number of shares (target)
+```
+
+```{r popularityTrainCut}
+
+popularityTrain$is_weekend=factor(popularityTrain$is_weekend)
+popularityTrain$weekday=factor(popularityTrain$weekday)
+popularityTrain$data_channel=factor(popularityTrain$data_channel)
+popularityTrain$month=factor(popularityTrain$month)
+
+popularityTrainBIS=popularityTrain[,c(2,5:10,12,14:16,22,25,28,30:36,38,39,42,45,50:52)]
+popularityTrain=subset(popularityTrain, select=-c(year,day,url))
+
+```
+
+Jednak¿e ca³y czas zachowujemy star¹ ramkê (pomniejszon¹ o adres url, dzieñ i rok), mo¿e siê okazaæ, 
+¿e nasze przeczucia by³y b³êdne.
+
+\newpage
+# Model
+
+Zacznijmy budowanie modeli:
+
+```{r modelOne, echo=TRUE}
+
+popularityLog=lm(shares~.,data=popularityTrain)
+summary(popularityLog)
+
+popularityLogBIS=lm(shares~.,data=popularityTrainBIS)
+summary(popularityLogBIS)
+
+```
+
+Widzimy, ¿e mimo naszych intuicji wiêkszy model daje lepsze dopasowanie (je¿eli za miarê potraktujemy R^2)... 
+
+Odt¹d bêdziemy pos³ugiwaæ siê nazwami *popularityLog** oraz **popularityLogBIS**.
+
+### ANOVA
+
+PrzeprowadŸmy ANOVA'ê dla sprawdzenia modeli:
+
+```{r anova}
+
+lmzero <- lm(shares~1, popularityTrain)
+anova(lmzero, popularityLog)
+
+lmzeroBIS <- lm(shares~1, popularityTrainBIS)
+anova(lmzeroBIS, popularityLogBIS)
+
+```
+
+Jak widzimy RRS dla skonstruowanych modelu jest mniejsze ni¿ dla modeli zerowego, wartoœci statystyki du¿a, 
+P-wartoœci ma³e, wiêc nasz modele zdaj¹ sie byæ lepsze, od modeli zerowych.
+
+### Wykresy diagnostyczne
+
+PrzejdŸmy do analizy wykresów diagnostycznych.
+
+```{r regressionPlots, echo=TRUE, dpi = 50}
+
+par(mfrow=c(2,3))
+
+plot(popularityLog, which = 1:6)
+plot(popularityLogBIS, which = 1:6)
+
+```
+
+Zauwa¿my, ¿e kilka obserwacji odstaje, usuniemy je z naszych danych i znów narysujemy wykresy diagnostyczne:
+
+```{r DeleteBig, include=FALSE}
+
+popularityTrain=popularityTrain[-which.max(popularityLog$fitted.values),]
+popularityLog=lm(shares~.,data=popularityTrain)
+summary(popularityLog)
+
+popularityTrainBIS=popularityTrainBIS[-which.max(popularityLogBIS$fitted.values),]
+popularityTrainBIS=popularityTrainBIS[-which.max(popularityLogBIS$fitted.values),]
+popularityTrainBIS=popularityTrainBIS[-which.max(popularityLogBIS$fitted.values),]
+popularityTrainBIS=popularityTrainBIS[-which.max(popularityLogBIS$fitted.values),]
+popularityLogBIS=lm(shares~.,data=popularityTrainBIS)
+summary(popularityLogBIS)
+
+```
+
+```{r regressionPlots2, echo=TRUE, dpi = 50}
+
+par(mfrow=c(2,3))
+
+plot(popularityLog, which = 1:6)
+plot(popularityLogBIS, which = 1:6)
+
+```
+
+Jak widaæ, nie jest idealnie, nie jest nawet dobrze, szczególnie je¿eli chodzi o rozk³ad residuów, 
+ale niewiele wiêcej mo¿emy na tê chwilê zrobiæ.
+
+### Testy
+
+Model **popularityLog**:
+
+```{r regressionTest, echo=TRUE}
+
+bptest(popularityLog)
+gqtest(popularityLog)
+dwtest(popularityLog, order.by=fitted(popularityLog))
+
+```
+
+Sprawdzanie normalnoœci dla tak du¿e próby niekoniecznie ma sens, dlatego j¹ pominiemy. 
+Z testów na homoskedastycznoœæ jestnie test BP odrzuca hipoteze zerow¹.
+
+Model **popularityLogBIS**
+
+```{r regressionTestBIS, echo=TRUE}
+
+bptest(popularityLogBIS)
+gqtest(popularityLogBIS)
+dwtest(popularityLogBIS, order.by=fitted(popularityLogBIS))
+
+```
+
+Wartoœci statystyk i testów s¹ praktycznie takie same jak dla modelu **popularityLog**, wnioski te¿ s¹ podobne
+
+### BIC 
+
+Jednym ze sposobów na poszukiwanie najlepszego modelu w regresji liniowej jest Bayesian Information Criterion, 
+zwane w skrócie BIC. Nie bêdziemy tutaj zag³êbiaæ siê w podstawy teoretyczne tej metody, zastosujemy j¹ i 
+zobaczymy jakie przynosi efekty, poni¿ej zobaczymy podsumowanie obydwu 
+modeli po dzia³aniu algorytmu zach³annego na podstawie BIC:
+
+
+```{r modelOneBIC, include=FALSE}
+
+par(mfrow=c(1,1))
+
+n=nrow(popularityTrain)
+LogBICBIS=lm(formula = shares ~ month + n_unique_tokens + num_hrefs + average_token_length + 
+    num_keywords + data_channel + kw_avg_avg + self_reference_avg_sharess + 
+    is_weekend + LDA_00 + global_subjectivity + LDA_04, data = popularityTrainBIS)
+# LogBICBIS=step(popularityLogBIS, direction="both", k=log(n))
+
+LogBIC=lm(formula = shares ~ month + n_non_stop_unique_tokens + num_hrefs + 
+    average_token_length + num_keywords + data_channel + kw_min_min + 
+    kw_min_max + kw_min_avg + kw_max_avg + kw_avg_avg + self_reference_avg_sharess + 
+    weekday + LDA_00 + LDA_01 + LDA_02 + LDA_03 + min_positive_polarity + 
+    global_subjectivity, data = popularityTrain) # Oszczêdnoœæ czasowa!
+# LogBIC=step(popularityLog, direction="both", k=log(n))
+
+```
+
+```{r modelOneBICSummary, echo=TRUE}
+
+summary(LogBIC)
+summary(LogBICBIS)
+
+```
+
+Iloœc zmiennych nam siê znacz¹co zmniejszy³a, a R^2^ pozosta³o praktycznie bez zmian, jest to o tyle dobre, 
+¿e mocno uproœciliœmy modele.
+
+### AIC 
+
+Modyfikacj¹ BIC jest AIC, które ró¿ni siê jedynie funkcj¹, której argumentu maksymalizujacego szukamy.
+
+```{r modelOneAIC, include=FALSE}
+
+LogAIC=lm(formula = shares ~ month + n_tokens_title + n_tokens_content + 
+    n_non_stop_unique_tokens + num_hrefs + num_self_hrefs + average_token_length + 
+    num_keywords + data_channel + kw_min_min + kw_max_min + kw_avg_min + 
+    kw_min_max + kw_avg_max + kw_min_avg + kw_max_avg + kw_avg_avg + 
+    self_reference_avg_sharess + weekday + LDA_00 + LDA_01 + 
+    LDA_02 + LDA_03 + global_subjectivity + global_rate_negative_words + 
+    min_positive_polarity + max_positive_polarity + title_subjectivity + 
+    title_sentiment_polarity + abs_title_subjectivity, data = popularityTrain)
+# LogAIC=step(popularityLog)
+
+LogAICBIS=lm(formula = shares ~ month + n_tokens_content + n_unique_tokens + 
+    num_hrefs + num_imgs + average_token_length + num_keywords + 
+    data_channel + kw_avg_avg + self_reference_avg_sharess + 
+    is_weekend + LDA_00 + LDA_01 + LDA_02 + LDA_03 + global_subjectivity + 
+    global_rate_negative_words + avg_positive_polarity + abs_title_subjectivity + 
+    abs_title_sentiment_polarity, data = popularityTrainBIS)
+# LogAICBIS=step(popularityLogBIS, direction="both")
+
+```
+
+```{r modelOneAICSummary, echo=TRUE}
+
+summary(LogAIC)
+summary(LogAICBIS)
+
+```
+
+Zastosowanie AIC daje nam podobne efekty jak BIC, zmniejzamy iloœæ zmiennych, lecz niedy¿um kosztem R^2^.
+
+### Regresja grzbietowa & Lasso
+
+Kolejnymi metodami mo¿liwymi do zaaplikowania s¹: Regresja grzbietowa oraz LASSO. S¹ one do siebie zbli¿one. 
+Nie przynios³y one porz¹danych wyników dla tego zrezygnowaliœmy z ich prezentacji.
+
+```{r modelOneBISLasso, eval=FALSE, dpi = 50}
+
+xLasso=as.matrix(subset(popularityTrainBIS, select=-c(data_channel,shares)))
+logLassoBIS=glmnet(x=xLasso, y = popularityTrainBIS$shares, alpha = 1)
+plot(logLassoBIS, xvar = "lambda")
+
+```
+
+```{r betasBIS, eval=FALSE, dpi = 50}
+
+betasBIS=data.frame(lambda=logLassoBIS$lambda,as.matrix(t(logLassoBIS$beta))) %>%
+    gather(coeff, value, -lambda)
+
+ggplot(betasBIS,aes(x=lambda, y=value, group=coeff, color=coeff)) +
+    geom_line() +
+    guides(color=FALSE)
+
+```
+
+```{r modelOneLasso, eval=FALSE, dpi = 50}
+
+xLasso=as.matrix(subset(popularityTrain, select=-c(weekday,data_channel,shares)))
+logLasso=glmnet(x=xLasso, y = popularityTrain$shares, alpha = 1)
+plot(logLasso, xvar = "lambda")
+
+```
+
+```{r betas, eval=FALSE, dpi = 50}
+
+betas=data.frame(lambda=logLasso$lambda,as.matrix(t(logLasso$beta))) %>%
+    gather(coeff, value, -lambda)
+
+ggplot(betas,aes(x=lambda, y=value, group=coeff, color=coeff)) +
+    geom_line() +
+    guides(color=FALSE)
+
+```
+
+# Walidacja & Testowanie
+
+### Walidacja
+
+Posiadamy kilka skonstruowanych modeli, teraz porównamy je na zbiorze walidacyjnym, sprawdzimy jak siê zachowuj¹ 
+i wybierzemy ten najlepszy (oczywiœcie najpierw musimy odpowiednio zmodyfikowaæ nasz zbiór):
+
+```{r query}
+
+popularityQuery$is_weekend=factor(popularityQuery$is_weekend)
+popularityQuery$weekday=factor(popularityQuery$weekday)
+popularityQuery$data_channel=factor(popularityQuery$data_channel)
+popularityQuery$month=factor(popularityQuery$month)
+
+popularityTest$is_weekend=factor(popularityTest$is_weekend)
+popularityTest$weekday=factor(popularityTest$weekday)
+popularityTest$data_channel=factor(popularityTest$data_channel)
+popularityTest$month=factor(popularityTest$month)
+
+queryPopularityLog=popularityQuery$shares-predict(popularityLog, popularityQuery)
+queryPopularityLogBIS=popularityQuery$shares-predict(popularityLogBIS, popularityQuery)
+queryPopularityLogBIC=popularityQuery$shares-predict(LogBIC, popularityQuery)
+queryPopularityLogBICBIS=popularityQuery$shares-predict(LogBICBIS, popularityQuery)
+queryPopularityLogAIC=popularityQuery$shares-predict(LogAIC, popularityQuery)
+queryPopularityLogAICBIS=popularityQuery$shares-predict(LogAICBIS, popularityQuery)
+
+```
+
+```{r queryR2, echo=TRUE}
+
+summary(popularityLog)$r.squared
+1-var(queryPopularityLog)/var(popularityQuery$shares)
+summary(popularityLogBIS)$r.squared
+1-var(queryPopularityLogBIS)/var(popularityQuery$shares)
+summary(LogBIC)$r.squared
+1-var(queryPopularityLogBIC)/var(popularityQuery$shares)
+summary(LogBICBIS)$r.squared
+1-var(queryPopularityLogBICBIS)/var(popularityQuery$shares)
+summary(LogAIC)$r.squared
+1-var(queryPopularityLogAIC)/var(popularityQuery$shares)
+summary(LogAICBIS)$r.squared
+1-var(queryPopularityLogAICBIS)/var(popularityQuery$shares)
+
+```
+
+Po porównaniu modeli, okazuje siê, ¿e najlepsze dopasowanie wykacuje model **LogAIC**.
+To na nim sprawdzono jak zachowuje siê ostatni zbiór testowy.
+
+### Testowanie
+
+SprawdŸmy:
+
+```{r finalTest, echo=TRUE}
+
+queryPopularityLogAIC=popularityTest$shares-predict(LogAIC, popularityTest)
+1-var(queryPopularityLogAIC)/var(popularityTest$shares)
+
+```
+
+Wszytko wygl¹da w porz¹dku.
+Oczywiœcie o ile dopasowanie na poziomie 14% mo¿na uznaæ za zadowalaj¹ce.
+
+\newpage
+# Podsumowanie/pos³owie
+
+Uda³o nam siê zbudowaæ model, który przy u¿yciu stosunkowo ma³ej iloœci zmiennych potrafi przewidzieæ 
+liczbê udostêpnieñ artku³u z dok³adnoœci¹ na poziomie 14%.
+Jednak za tym wszystkim kryje siê haczyk...
+
+Nasze dane by³y totalnie pomieszane, nie ujowniono tego wczeœniej, ale podczas analiazy znaleziono b³¹d.
+Nastêpnie rêcznie, metod¹ bisekcji, znaleziono pierwszy b³êdny wiersz w danych, 
+jest to linijka: **8011** oraz artyku³ 
+[Is This Tumblr's New Photo-Rich Redesign?](http://mashable.com/2013/06/06/tumblr-redesign/)
+od tego miejsca, iloœæ **share'ów** jest przesuniêta wzglêdem pozosta³ych danych, 
+z czasem ró¿nica wierszy roœnie do kilku, poprawienie rekordów rêcznie wymaga³oby cierpliwoœci 
+i by³oby niesamowicie czasoch³onne. Warto z tego wzi¹c nauczkê na przysz³oœæ, ¿eby bardzo dok³adnie
+przyjrzeæ siê danym, tak¿e poprzez np. losowe sprawdzenie pewnych informacji. 

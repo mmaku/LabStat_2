@@ -1,0 +1,928 @@
+---
+title: "LabStat2 - Sprawozdanie 3" 
+author: "Makowski Micha³" 
+date: "31 stycznia 2017r." 
+header-includes:
+   - \usepackage{subfig}
+   - \usepackage{graphicx}
+output: 
+  pdf_document:
+    fig_caption: true
+    highlight: tango
+    number_sections: true
+    toc: true
+    toc_depth: 3
+fontsize: 10pt
+geometry: margin=1.5cm
+subtitle: '...czyli jak znaleŸæ recydywistów..?' 
+lang: pl-PL 
+---
+
+```{r knitrOptions, include=FALSE}
+
+knitr::opts_chunk$set(fit.align="center", echo=FALSE, warning=FALSE,
+error=FALSE, message=FALSE)
+
+inline_hook <- function(x) { if (is.numeric(x)) { format(x, digits=2) } else x}
+
+knitr::knit_hooks$set(inline=inline_hook)
+knitr::opts_chunk$set(comment="", message=FALSE, tidy.opts=list(keep.blank.line=TRUE, width.cutoff=120),
+                      options(width=100), fig.align='center', fig.height=6,
+                      fig.width=10, fig.show='hold', size='footnotesize')
+
+```
+
+```{r libraries, include=FALSE}
+
+rm(list=ls())
+
+options(width=100)
+
+# install.packages("ggplot2")
+library(ggplot2, quietly = TRUE) 
+# install.packages("caTools") 
+library(caTools, quietly = TRUE) 
+# install.packages("ROCR")
+library(ROCR, quietly = TRUE) 
+#install.packages("xtable")
+library(xtable, quietly = TRUE) 
+# install.packages("glmnet")
+library(glmnet, quietly = TRUE) 
+```
+
+\newpage 
+# Wstêp
+
+## Problem
+
+W wielu systemach wymiaru sprawiedliwoœci na ca³ym œwiecie, wiê¿niowie którzy nie stanowi¹ zagro¿enia dla spo³eczeñstwa (albo przynajmniej nie zdawali siê go stwarzaæ do momentu wypuszczenia), s¹ wysy³ani na tzw. zwolnienie warunkowe. Bêd¹c na takim zwolnieniu nadal traktowani s¹ jako odbywaj¹cy karê, jeœli narusz¹ ustalone warunki, to zostan¹ przywróceni do odbywania kary w wiêzieniu.
+
+W USA  s¹dy tzw. _parole boards_ (parole - zwolnienie warunkowe) decyduj¹, którzy wiêŸniowie s¹ dobrymi kandydatami do zwolnienia warunkowego. Maj¹ one za zadanie oceniac, czy wiêzieñ dopuœci siê kolejnego wykroczenia bêd¹c na zwolnieniu. Problematyczne jest to, ¿e takie s¹dy postêpuj¹ subiektywnie i ich decyzja mo¿e byæ obarczona fatalna w skutkach. Postaramy siê pomóc _parole boards_ poprze z zbudowanie modelu, który w obiektywny, matematyczny sposób pomo¿e podj¹c decyzjê o zwolnieniu. Model mia³by pomogaæ podj¹c decyzjê, a nie zastêpowaæ ocenê komisji. 
+
+---
+
+## Dane
+
+
+Do tego zadania bêdziemy wykorzystywaæ dane z _United States 2004 National Corrections Reporting Program_, pochodz¹ce prawdopodobnie ze strony [icpsr.umich.edu](http://www.icpsr.umich.edu/icpsrweb/NACJD/series/38/studies/26521?archive=NACJD&sortBy=7). My pos³ugujemy siê wersj¹ przygotowan¹ specjalnie na nasze potrzeby. NCRP jest to ogólnokrajowy spis wieŸniów My badamy tylko tych których dotyczy³o zwolnienie warunkowe. Zbiór ograniczony jest do osobników, którzy spêdzili wiêzieniu nie wiêcej ni¿ 6 miesiêcy, a ich ca³kowity wyrok nie przekracza 18-tu miesiêcy pozbawienia wolnoœci. Na³o¿one jest te¿ dodatkowe ograniczenie, które zak³ada, ¿e wiêzieñ musia³ albo odbyæ poprawnie zwolnienie, albo musia³ z³amaæ jego zasady i powróci³ spowrotem do zak³adu karnego.
+
+```{r loadData, include=FALSE}
+
+parole=tryCatch(read.csv("parole.csv"))
+
+```
+---
+
+
+## Cel
+
+Tak jak wczeœniej wspomniano, g³ównym celem bêdzie stworzenie modelu regresji logistycznej, który ma przewidywaæ prawdopodobieñstwo naruszenia zwolnienia warunkowego.
+
+---
+
+## Droga do celu
+
+Aby poprawnie zbudowaæ model podzielimy nasz zbiór na podzbiory: treningowy i walidacyjny, w proporcjach 0.7, 0.3 odpowiednio. Pierwszy bêdziê s³u¿y³ do ekploracji danych i budowy kilku modeli, drugi do sprawdzenia modeli i wyboru tego ostatecznego. £¹cznie do dyspozycji mamy `r nrow(parole)`, jednak¿e po podziale zbiór treningowy bedzie zawiera³ $`r floor(0.7*nrow(parole))`$ rekordów co mo¿e nie jest potê¿n¹ wielkoœci¹, ale wystarcza eksploracja mia³a sens.
+
+\newpage
+# Podstawowa analiza i przygotowanie danych
+
+Poni¿ej prezentujemy opis, informacje jakie posiadamy:
+
+``` 
+1. male: 1 if the parolee is male, 0 if female 
+2. race: 1 if the parolee is white, 2 otherwise 
+3. age: the parolee's age in years at release from prison 
+4. state: a code for the parolee's state. 2 is Kentucky, 3 is Louisiana, 4 is Virginia, and 1 is any other state. The three states were selected due to having a high representation in the dataset. 
+5. time.served: the number of months the parolee served in prison (limited by the inclusion criteria to not exceed 6 months).
+6. max.sentence: the maximum sentence length for all charges, in months (limited by the inclusion criteria to not exceed 18 months). 7. multiple.offenses: 1 if the parolee was incarcerated for multiple offenses, 0 otherwise.
+8. crime: a code for the parolee's main crime leading to incarceration. 2 is larceny, 3 is drug-related crime, 4 is driving-related
+crime, and 1 is any other crime. 
+9. violator: 1 if the parolee violated the parole, and 0 if the parolee completed the parole without violation. 
+```
+
+Tak jak wczeœniej wspomnieliœmy, do dyspozycji mamy $`r floor(0.7*nrow(parole))`$ obserwacji `r ncol(parole)` zmiennych. Zmienn¹ objaœnian¹ jest oczywiœcie ostatnia kolumna, która okreœla, czy nast¹pi³o naruszenie zwolnenia wrunkowego czy te¿ nie.
+
+---
+
+## Przygotowanie i eksploracja danych
+
+Na pocz¹tku sprawdŸmy, czy nasze dane s¹ kompletne:
+
+```{r completeCases, echo=TRUE}
+
+identical(parole, parole[complete.cases(parole),])
+
+```
+
+Wiedzac to mo¿emy przejœæ do *sfaktoryzowania* danych. Znakomita wiêkszoœæ informacji jakie posiadamy to dane kategoryczne, informacja czy dane zdarzenia mia³o miejsce czy nie. Zmienimy tak¿e wartoœci zmiennych sfaktoryzowanych, ma to jedynie na celu zwiêkszenie czytelnoœci i u³atwienie prac (np. w ggplot2).
+
+```{r asFactors}
+
+# Rasa 
+parole$race[which(parole$race==1)]="White" 
+parole$race[which(parole$race==2)]="Other"
+
+# State 
+parole$state[which(parole$state==1)]="Other" 
+parole$state[which(parole$state==2)]="Kentucky" 
+parole$state[which(parole$state==3)]="Louisiana" 
+parole$state[which(parole$state==4)]="Virginia"
+
+# Crime 
+parole$crime[which(parole$crime==1)]="Other" 
+parole$crime[which(parole$crime==2)]="Larceny" 
+parole$crime[which(parole$crime==3)]="Drug-releted" 
+parole$crime[which(parole$crime==4)]="Driving-releted"
+
+parole$male <- factor(parole$male)
+parole$race <- factor(parole$race) 
+parole$state <- factor(parole$state)
+parole$multiple.offenses <-
+factor(parole$multiple.offenses)
+parole$crime <- factor(parole$crime) 
+# parole$violator <- factor(parole$violator)
+
+```
+
+Sporna pozostaje kwestia d³ugoœci wyroku, byæ mo¿e warto zbudowaæ dwa modele, jeden opieraj¹cy siê na (w pewien sposób) skategoryzowanych danych, drugi na traktuj¹cy d³ugoœæ odsiadki jako zmienn¹ jakoœciow¹.
+
+Przyjrzyjmy siê danym:
+
+```{r summary}
+
+summary(parole)
+
+```
+
+Liczba wiê¿niów ³ami¹cych zasadê zwolnienia warunkowego jest stosunkowo ma³a, aby w odpowiedni sposób podzieliæ dane na dwa zbiory pos³u¿ymy siê funkcj¹ *sample.split* z pakietu *caTools*, która zapewnia podzia³ próby wg. odpowiednich proporcji.
+
+```{r sampleSplit}
+
+set.seed(23)
+foo=sample.split(parole$violator, floor(0.7*nrow(parole))) 
+paroleTrain=parole[foo,]
+paroleValidate=parole[!foo,]
+
+```
+
+
+W kolejnych podrozdzia³ach przyjrzymy siê ka¿dej ze zmiennych, postaramy siê znaleŸæ zale¿noœæi miedzy ni¹, a z³amaniem zwolnienia warunkowego.
+
+---
+
+\newpage
+## P³eæ
+
+Przyjrzyjmy siê rozk³adowi recydywistów ze wzglêdu na p³eæ:
+
+```{r maleJitter, fig.height=4}
+
+ggplot(paroleTrain) + geom_jitter(aes(x=male, y=as.factor(violator),
+color=as.factor(violator))) + theme_minimal()
+
+```
+
+Powy¿szy wykres nie mówi nic, poza tym, ¿e wœród wiê¿niów na zwolnieniu obserwujemy wiêcej mê¿czyzn. Jest to intuicyjne, gdy¿ wœród wiêŸniów ogólnie przewa¿aj¹ mê¿czyŸni -> [LINK](https://www.prisonfellowship.org/resources/newsroom/media-background-information/media-additional/statistics-women-prisoners/).
+
+Znormalizujmy liczbê wiêŸniów ka¿dej z p³ci i przyjrzyjmy siê danym po raz kolejny:
+
+```{r maleGeom, fig.height=4}
+
+ggplot(paroleTrain) + geom_bar(aes(x=male, color=as.factor(violator)),
+position="fill") + theme_minimal()
+
+```
+
+Tym razem widaæ, a raczej nie widaæ zaleznoœci pomiêdzy p³ci¹, a recydyw¹. Sprawd¿my jeszcze jak wygl¹da udzia³ procentowy recydywistów w ka¿dej z p³ci:
+
+```{r checkSex, echo=TRUE, collapse=TRUE}
+
+sum(paroleTrain$male=="1" & paroleTrain$violator==1)/sum(paroleTrain$male=="1")
+sum(paroleTrain$male=="0" & paroleTrain$violator==1)/sum(paroleTrain$male=="0")
+
+```
+
+Ró¿nica jest praktycznie ¿adna, wiêc p³eæ nie powinna w ¿aden sposób wp³ywaæ na decyzjê komisji (co niekoniecznie mo¿e miêc miejsce w rzeczywistoœci).
+
+---
+
+\newpage
+## Rasa
+
+Przedstawiamy rozk³adowi recydywistów ze wzglêdu na kolor skóry. Tym razem pominiemy pierwszy z wykresów u¿ywanych przy analizie p³ci, skupimy siê tylko na znormalizowanych wartoœciach:
+
+```{r raceGeom}
+
+ggplot(paroleTrain) + 
+    geom_bar(aes(x=race, color=as.factor(violator)), position="fill") + 
+    theme_minimal()
+
+```
+
+Zale¿noœæ istnieje, choæ jest bardzo ma³a, to jednak widoczna, wiêŸniowie biali rzadziej pope³niaj¹ wykroszenia na zwolnieniu warunkowym ni¿ pozostali. SprawdŸmy jak wygl¹da udzia³ procentowy:
+
+```{r checkRace, echo=TRUE, collapse=TRUE}
+
+sum(paroleTrain$race=="White" & paroleTrain$violator==1)/sum(paroleTrain$race=="White") 
+sum(paroleTrain$race=="Other" & paroleTrain$violator==1)/sum(paroleTrain$race=="Other")
+
+```
+
+Ró¿nica dwóch punktów procentowych lub $20\%$. Druga liczba obrazuje, ¿e ró¿nica jest doœc znaczna na korzyœæ wiêŸniów bia³ych. Mo¿e to byæ odebrane jako niepoprawnoœc polityczna. W prawie amrykañskim, jak i polskim, zapisane jest, ¿e nie nale¿y podejmowaæ decyzji prawnych argumentuj¹c je kolorem skóry, wiêc taki czynnnik i tak staje siê bezu¿yteczny.
+
+\newpage
+Jedn¹ z dodatkowych obserwacji jest to, ¿e wiêzienia pewnych stanów s¹ zdominowane przez ludnoœæ jednej z ras:
+
+```{r raceJitter}
+
+ggplot(paroleTrain) + 
+    geom_jitter(aes(x=race, y=state, color=state)) +
+    theme_minimal() + 
+    theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+
+```
+
+Na chwilê obecn¹ nie wnosi to zbyt wiele do modelu, byc mo¿e za chwilê do czegoœ dojdziemy. Jest to ciekawa obserwacja, a mo¿e byæ jeszcze ciekawsza, gdybyœmy porównali to z danymi o ludnoœci danego stanu w ogóle. Jak siê ma rozk³ad ras wœród wiêzniów w stosunku do tego rozk³adu w ca³ym stanie? 
+
+Przyk³adowo: w Luizjanie i Wirginii oko³o 60% ludzi to biali amerykanie, a sk³ad wiêzieñ odbiega od tego podzia³u, w Kentucky biali stanowi¹ 90%. Tak analiza i szukanie zale¿noœci to nie jest jednak nasz cel, pomimo, ¿e moglibysmy dojœæ do ciekawych wniosków.  
+
+---
+
+\newpage
+## Wiek
+
+Przyjrzyjmy siê jak rozk³ada siê wiek recydywistów:
+
+```{r ageHist, fig.height=5}
+
+ggplot(paroleTrain, aes(x=age)) + 
+    geom_histogram(aes(fill=as.factor(violator)), colour="black") + 
+    theme_minimal()
+
+```
+
+Widzimy, ¿e wiek wiêŸniów rozk³ada siê doœæ jednostajnie na przedzia³e 20-50 lat, poza nim obserwujemy wyraŸny spadek wiêŸniów. Tak¿e na tym przedziale liczba recydywistów jest najwiêksza, byæ moze warto by³oby w pewien sposób skategoryzowaæ zmienn¹ dot. wieku.
+
+Sprawd¿my jeszcze histogram "skumulowany":
+
+```{r ageFillHist, fig.height=5}
+
+ggplot(data=paroleTrain, aes(x=age, fill=as.factor(violator))) +
+    geom_histogram(alpha=.5, position="fill") + 
+    theme_minimal()
+
+```
+
+Jak potraktowaæ wiek? Jako zmienn¹ kategoryczn¹, iloœciow¹ czy mo¿e pogrupowaæ i wtedy skategoryzowaæ? Stworzymy kilka rozwi¹zañ i porównamy je pomiêdzy sob¹ na etapie budowania modelu.
+
+```{r ageFactor}
+
+paroleTrain$age.group.factor   =cut(paroleTrain$age, c(floor(min(parole$age)),20,50,ceiling(max(parole$age))),
+                                    c("Young","Middle","Old")) 
+paroleValidate$age.group.factor=cut(paroleValidate$age, c(floor(min(parole$age)),20,50,ceiling(max(parole$age))),
+                                    c("Young","Middle","Old"))
+
+
+paroleTrain$age.5.factor   =factor(cut(paroleTrain$age, seq(from=floor(min(parole$age)), to=max(parole$age)+5, by=5))) 
+paroleValidate$age.5.factor=factor(cut(paroleValidate$age, seq(from=floor(min(parole$age)), to=max(parole$age)+5, by=5)))
+
+```
+
+---
+
+\newpage
+## Miejsce odsiadki
+
+Przyjrzyjmy siê rozk³adowi recydywistów ze wzglêdu na miejsce odsiadki:
+
+```{r stateJitter, fig.height=5}
+
+ggplot(paroleTrain) + 
+    geom_jitter(aes(x=state, y=as.factor(violator),color=as.factor(violator))) + 
+    theme_minimal() + 
+    theme(axis.title.y=element_blank(), axis.text.y=element_blank(),axis.ticks.y=element_blank())
+
+```
+
+Zdaje siê, ¿e w tym przypadku zale¿noœc jest doœæ istotna, Virginia wydaje siê "spokojniejszym" stanem ni¿ pozosta³e, z kolei w Luizjanie liczba wiêŸniów ³ami¹cych zasady zwolnienia warunkowego jest wzglêdnie wysoka. Spojrzmy jak te wartoœci rozk³adaj¹ siê po znormalizowaniu:
+
+```{r stateGeom, fig.height=5}
+
+ggplot(paroleTrain) + 
+    geom_bar(aes(x=state, color=as.factor(violator)),position="fill") + 
+    theme_minimal()
+
+```
+
+Nasze wstêpne obserwacje potwierdzaj¹ siê - Luizjana to zdecydowanie niespokojny rejon, odsetek wiêŸniów ³ami¹cych zwolnienia jest kilkukrotnie wy¿szy ni¿ w innych stanach. Ta zmienna zdecydowanie powinna znaleŸæ siê w naszym modelu.
+
+---
+
+\newpage
+## Dotychczasowy czas odsiadki
+
+Przyjrzyjmy jak rozk³ada siê czas odsiadki do momentu zwolnienia:
+
+```{r timeServedHist, fig.height=5}
+
+ggplot(paroleTrain, aes(x=time.served)) + 
+    geom_histogram(aes(fill=as.factor(violator)), colour="black") + 
+    theme_minimal()
+
+```
+
+Widzimy, ¿e wœród wiêŸniów którzy krótko odbywali swoj¹ karê, ³amanie zwolnienia warunkowego by³o popularniejsze. Bêdzie to lepiej widoczne do "znormalizowanym histogramie":
+
+```{r timeServedHistFill, fig.height=5}
+
+ggplot(data=paroleTrain, aes(x=time.served, fill=as.factor(violator))) + 
+    geom_histogram(binwidth=.5, alpha=.5, position="fill") + 
+    theme_minimal()
+
+```
+
+Widoczna jest zale¿noœæ: im krótsza dotychczasowa odsiadka, tym wiêksze prawdopodobieñstwa pope³nienia wykroczenia na zwolnieniu warunkowym. Wydaje siê to byæ zgodne z intuicj¹: wiêzieñ po krótszej odsiadce móg³ jeszcze nie poznaæ i zrozumieæ co mu odebrano i dlatego nie czu³ obaw przed powrotem do celi. Skategoryzuje sobie t¹ zale¿noœæ, byc mo¿e takie uproszczenie pomo¿e nam skonstruowaæ dok³adniejszy model.
+
+```{r timeServedFactor}
+
+paroleTrain$time.served.factor   =cut(paroleTrain$time.served, c(-1,2,6.5), c("Short","Long")) 
+paroleValidate$time.served.factor=cut(paroleValidate$time.served, c(-1,2,6.5), c("Short","Long"))
+
+```
+
+---
+
+\newpage
+## Ca³kowity czas odsiadki
+
+Przyjrzyjmy jak rozk³ada siê czas ca³kowitej, maksymalnej odsiadki:
+
+```{r maxSentHist, fig.height=5.25}
+
+ggplot(paroleTrain, aes(x=max.sentence)) + 
+    geom_histogram(aes(fill=as.factor(violator)), binwidth=1, colour="black") + 
+    theme_minimal()
+
+```
+
+Z racji dominacji wyroków w okolicach roku i wiêkszych niewiele jesteœmy w stanie powiedzieæ o rozk³adzie recydywistów korzystaj¹c z tego histogramu. Mo¿emy jednak zauwa¿yæ, ¿e wyroki poni¿ej roku s¹ bardzo rzadkie w stosunku do pozosta³ych.
+
+Sprawd¿my jak ma siê rozk³ad wieku wsród ka¿dej z grup: ³ami¹cych zwolnienie i tych nie:
+
+```{r maxSentBox, fig.height=5.25}
+
+ggplot(paroleTrain, aes(x=as.factor(violator), y=max.sentence, color=as.factor(violator))) +
+    geom_boxplot() +
+    theme_minimal()
+
+```
+
+Widzimy, ¿e wsród m³odszych wiê¿niów ³amanie zwolnienia zdarza siê czêsciêj. 
+
+\newpage
+Aby widzieæ wiêcej zale¿noœci po raz kolejny pos³u¿ymy siê "znormalzowanym" histogramem:
+
+```{r maxSentHistFill, fig.height=4.9}
+
+ggplot(data=paroleTrain, aes(x=max.sentence, fill=as.factor(violator))) +
+    geom_histogram(binwidth=1, alpha=.5, position="fill") + 
+    theme_minimal()
+
+```
+
+Widoczna jest s³aba zale¿noœæi drugiego lub wrêcz trzeciego stopnia. Tutaj moglibyœmy skategoryzowaæ zmienne w natêpuj¹cy sposób:
+
+* Wyrok do 8 mies. 
+* Wyrok powyzej 8, a poni¿ej 14 mies. 
+* Wyrok od 14 mies.
+
+co uczynimy. Nie zast¹pimy jednak danych, a jedynie stworzymy now¹ zmienn¹, która mo¿e siê przydaæ przy budowie ró¿nych modeli. Zobaczymy jak teraz wygl¹da rozk³ad:
+
+```{r maxSentFactor}
+
+paroleTrain$max.sentence.factor   =cut(paroleTrain$max.sentence, c(0,8,13,18),c("Short","Medium","Long")) 
+paroleValidate$max.sentence.factor=cut(paroleValidate$max.sentence, c(0,8,13,18), c("Short","Medium","Long"))
+
+```
+
+```{r maxSentFactorGeom, fig.height=4.9}
+
+ggplot(paroleTrain) + 
+    geom_bar(aes(x=max.sentence.factor,color=as.factor(violator)), position="fill") + 
+    theme_minimal()
+
+```
+
+Im krótszy czas ca³kowitej odsiadki tym "chêtniej"" wiêŸniowie wracaj¹ do celi. 
+
+W koñcu wiele nie strac¹...
+
+---
+
+\newpage
+## Liczba przestêpstw
+
+Przyjrzyjmy siê rozk³adowi wiêŸnióW ze wszglêdu liczbê pope³nionych wykroczeñ:
+
+```{r multipleGeom}
+
+ggplot(paroleTrain) + 
+    geom_bar(aes(x=multiple.offenses,color=as.factor(violator)), position="fill") + 
+    theme_minimal()
+
+```
+
+Widzimy, ¿e wœród osób, które pope³ni³y wiêcej ni¿ jedno wykroczenie, ryzyko zwi¹zane z wypuszczenie mich na zwolnienie warunkowe jest podwy¿szone, Sprawd¿my jak wygl¹daj¹ liczby:
+
+```{r checkMultiple, echo=TRUE, collapse=TRUE}
+
+sum(paroleTrain$multiple.offenses=="1" & paroleTrain$violator==1)/sum(paroleTrain$multiple.offenses=="1")
+sum(paroleTrain$multiple.offenses=="0" & paroleTrain$violator==1)/sum(paroleTrain$multiple.offenses=="0")
+
+```
+
+Ró¿nica jest prawie dwukrotna, wspó³czynnik ten powinieñ mieæ istotny wp³yw na ponoszone ryzyko.
+
+\newpage
+## Rodzaj przestêpstwa
+
+Przyjrzyjmy siê roz³ozeniu wiêŸniów ze wzglêdu na pope³nione przestêpstwo:
+
+```{r crimeJitter}
+
+ggplot(paroleTrain) + 
+    geom_jitter(aes(x=crime, y=as.factor(violator),color=as.factor(violator))) + 
+    theme_minimal()
+
+```
+
+Wydaje siê, ¿e kierowcy rzadziej ³ami¹ warunki zwolnienia, zobaczmy jak to wygl¹da na wykresie skumulowanym:
+
+```{r crimeGeom}
+
+ggplot(paroleTrain) + geom_bar(aes(x=crime, color=as.factor(violator)),
+position="fill") + theme_minimal()
+
+```
+
+Faktycznie, wspó³czynnik osób ³ami¹cych zasady zwolnienia wœród kierowcóW jest prawie dwukrotny ni¿szy ni¿ w pozosta³ych. Nie znamy dok³adnych zasad zwonienia warunkowego, ale pomimo opini, ¿e jeœli raz wsi¹knie siê w œwiat narkotyków nie da siê z niego uciec, to wspó³czynnik recydiwistów wœróD tej grupy wcale nie jest wy¿szy ni¿ w pozosta³ych.
+
+Spójrzmy na udzia³ procentowy w ka¿dej z grup:
+
+```{r checkcrime, echo=TRUE, collapse=TRUE}
+
+sum(paroleTrain$crime=="Driving-releted" & paroleTrain$violator==1)/
+    sum(paroleTrain$crime=="Driving-releted") 
+sum(paroleTrain$crime=="Drug-releted" & paroleTrain$violator==1)/
+    sum(paroleTrain$crime=="Drug-releted")
+sum(paroleTrain$crime=="Larceny" & paroleTrain$violator==1)/
+    sum(paroleTrain$crime=="Larceny") 
+sum(paroleTrain$crime=="Other" & paroleTrain$violator==1)/
+    sum(paroleTrain$crime=="Other")
+
+```
+
+Obserwacje siê potwierdzaj¹, kierowcy s¹ grup¹ najmniejszego ryzyka. To istotna informacja dla naszego modelu.
+
+```{r driverFactor}
+
+paroleTrain$isDriver   =as.factor(1*(paroleTrain$crime=="Driving-releted")) 
+paroleValidate$isDriver=as.factor(1*(paroleValidate$crime=="Driving-releted"))
+
+```
+
+\newpage 
+# Model
+
+## Wstêp
+Zobaczmy jak prezentuj¹ siê nasze dane:
+
+```{r dataSummary}
+
+str(paroleTrain)
+
+```
+
+---
+
+## Budowa i wstêpnê porównanie
+
+Zbudujmy kilka podstawowych modeli, bêd¹ ró¿ni³y siê u¿ytymi uproszczeniami, ¿aden z nich nie zawera zmiennej dot. p³ci oraz rasy, gdy¿ te odrzucilismy w momencie audytu danych:
+
+```{r modelOne, echo=TRUE}
+
+regLogParole=function(index)
+{ return(glm(violator~.,data=paroleTrain[,index], family="binomial")) }
+
+paroleTrain.glmFull          =regLogParole(c(-1,-2,            -10,-11,-12,-13,-14))
+paroleTrain.glmFullExtra     =regLogParole() 
+paroleTrain.glmAgeGroupFactor=regLogParole(c(-1,-2,-3,             -11,-12,-13,-14))
+paroleTrain.glmAge5Factor    =regLogParole(c(-1,-2,-3,         -10,    -12,-13,-14))
+paroleTrain.glmServed        =regLogParole(c(-1,-2,   -5,      -10,-11,    -13,-14))
+paroleTrain.glmSentence      =regLogParole(c(-1,-2,      -6,   -10,-11,-12,    -14))
+paroleTrain.glmSimple        =regLogParole(c(-1,-2,-3,-5,-6,-8,    -11            ))
+paroleTrain.glmDriver        =regLogParole(c(-1,-2,         -8,-10,-11,-12,-13    ))
+
+```
+
+Zbudowaliœmy bardzo wiele modeli, mo¿e nawet zbyt wiele. Nie bêdziemy ich tutaj po kolei opisywaæ, powy¿sze przedstawienie daje mo¿liwoœæ pozniania na jakich danych zbudowanych jest model. Szybki rzut oka na œrednie, ró¿nice pomiêdzy œrednimy:
+
+```{r modelComparison}
+
+modelsNames=c("Full","FullExtra","AgeGroupFactor","Age5factor","Serve","Sentence","Simple","Driver")
+
+info=matrix(c(tapply(paroleTrain.glmFull$fitted.values, paroleTrain.glmFull$y,mean), AIC(paroleTrain.glmFull)), nrow=1)
+info=rbind(info, c(tapply(paroleTrain.glmFullExtra$fitted.values, paroleTrain.glmFullExtra$y, mean), 
+           AIC(paroleTrain.glmFullExtra)))
+info=rbind(info, c(tapply(paroleTrain.glmAgeGroupFactor$fitted.values, paroleTrain.glmAgeGroupFactor$y, mean),
+           AIC(paroleTrain.glmFullExtra)))
+info=rbind(info, c(tapply(paroleTrain.glmAge5Factor$fitted.values, paroleTrain.glmAge5Factor$y,mean), 
+           AIC(paroleTrain.glmAge5Factor)))
+info=rbind(info, c(tapply(paroleTrain.glmServed$fitted.values, paroleTrain.glmServed$y, mean), 
+           AIC(paroleTrain.glmServed)))
+info=rbind(info, c(tapply(paroleTrain.glmSentence$fitted.values, paroleTrain.glmSentence$y, mean), 
+           AIC(paroleTrain.glmSentence))) 
+info=rbind(info, c(tapply(paroleTrain.glmSimple$fitted.values, paroleTrain.glmSimple$y, mean), 
+           AIC(paroleTrain.glmSimple))) 
+info=rbind(info, c(tapply(paroleTrain.glmDriver$fitted.values, paroleTrain.glmDriver$y, mean), 
+           AIC(paroleTrain.glmDriver))) 
+
+info=cbind(info[,-3], abs(info[,1]-info[,2]), info[,3])
+colnames(info)=c(0,1,"diff", "AIC") 
+rownames(info)=modelsNames
+
+```
+
+```{r modelComparisonTable, results='asis', fig.width=8}
+
+knitr::kable(round(info[,-4],3), caption="Œrednie dopasowanych wartoœæ dla ka¿dej z grup")
+
+    ```
+
+Jak widaæ ro¿nice miêdzy œrednimi s¹ doœc znacz¹ce, co dobrze wró¿y na przysz³oœæ. Wszystkie zbudowane modele s¹ bardzo do siebie zbli¿one, Okazuje siê, ¿e najbardziej skomplikowane modele niekoniecznie maj¹ sens. 
+
+---
+
+## Boxplots
+
+Spójrzmy teraz na boxploty przedstawiaj¹ce informacje o rozk³adzie wartoœci dopasowanych:
+
+```{r modelsBoxPlots, fig.width=5.5}
+
+models=data.frame(model=c(rep(modelsNames[1], length.out=length(paroleTrain.glmFull$fitted.values)), 
+                          rep(modelsNames[2], length.out=length(paroleTrain.glmFullExtra$fitted.values)), 
+                          rep(modelsNames[3], length.out=length(paroleTrain.glmAgeGroupFactor$fitted.values)),
+                          rep(modelsNames[4], length.out=length(paroleTrain.glmAge5Factor$fitted.values)), 
+                          rep(modelsNames[5], length.out=length(paroleTrain.glmServed$fitted.values)), 
+                          rep(modelsNames[6], length.out=length(paroleTrain.glmSentence$fitted.values)), 
+                          rep(modelsNames[7], length.out=length(paroleTrain.glmSimple$fitted.values)), 
+                          rep(modelsNames[8], length.out=length(paroleTrain.glmDriver$fitted.values))), 
+                  predProb=c(paroleTrain.glmFull$fitted.values,
+                             paroleTrain.glmFullExtra$fitted.values, 
+                             paroleTrain.glmAgeGroupFactor$fitted.values,
+                             paroleTrain.glmAge5Factor$fitted.values, 
+                             paroleTrain.glmServed$fitted.values,
+                             paroleTrain.glmSentence$fitted.values, 
+                             paroleTrain.glmSimple$fitted.values, 
+                             paroleTrain.glmDriver$fitted.values), 
+                  violator=c(paroleTrain.glmFull$y,
+                             paroleTrain.glmFullExtra$y, 
+                             paroleTrain.glmAgeGroupFactor$y,
+                             paroleTrain.glmAge5Factor$y, 
+                             paroleTrain.glmServed$y, 
+                             paroleTrain.glmSentence$y,
+                             paroleTrain.glmSimple$y,
+                             paroleTrain.glmDriver$y))
+
+foo=(models$model=="Full" | models$model=="FullExtra" | models$model=="Simple" | models$model=="Age5Factor")
+
+ggplot(data=models[foo,]) + 
+    geom_boxplot(aes(x=as.factor(violator), y=predProb, color=as.factor(violator))) + 
+    facet_wrap(~model) + 
+    guides(color=F) 
+
+```
+
+Zdecydowaliœmy siê przedstawiæ tylko 4 wykresy pude³kowe, pozosta³e cztery niewiele siê od nich ró¿ni¹ i tylko sztucznie zwiêkszaj¹ rozmiar raportu. Boxploty wygl¹daj¹ okej, doœæ istotna odleg³oœæ pomiêdzy pierwszym i trzecim kwartlem mo¿e byæ problematyczna dla obserwcji recydywistóW, choæ du¿a ró¿nica w medianie i œrednich pomiêdzy obydwoma stanami powinna z tym pomóc.
+
+---
+
+\newpage
+## Confusion Matrix
+
+_Confusion Matrix_ pozwalaj¹ zobrazowaæ jakie decyzje podejmowa³ model. Przypomnijmy jak jest ona skonstruowana:
+
++---------------+---------------------+---------------------+
+|               | Przewidziane 0      | Przewidziane 1      |
++===============+=====================+=====================+
+| Faktyczne 0   | TRUE NEGATIVE (TN)  | FALSE NEGATIVE (FP) |
++---------------+---------------------+---------------------+
+| Faktyczne 1   | FALSE NEGATIVE (FN) | TRUE POSITIVE (TP)  |
++---------------+---------------------+---------------------+
+
+Poni¿ej przedstawiamy _Confusion Matrix_ dla ka¿dego ze zbudowanych modeli:
+
+```{r confMatrix, results='asis'}
+
+# knitr::kable(ftable(models$model, models$violator, models$predProb>0.5)) 
+# ftable(models$violator, models$predProb>0.5))
+# pander::pander(paroleTrain.glmFullExtra) 
+
+t1=xtable(table(paroleTrain.glmFull$y, paroleTrain.glmFull$fitted.values>0.5))
+t2=xtable(table(paroleTrain.glmFullExtra$y, paroleTrain.glmFullExtra$fitted.values>0.5))
+t3=xtable(table(paroleTrain.glmAgeGroupFactor$y, paroleTrain.glmAgeGroupFactor$fitted.values>0.5))
+t4=xtable(table(paroleTrain.glmAge5Factor$y, paroleTrain.glmAge5Factor$fitted.values>0.5))
+t5=xtable(table(paroleTrain.glmServed$y, paroleTrain.glmServed$fitted.values>0.5))
+t6=xtable(table(paroleTrain.glmSentence$y, paroleTrain.glmSentence$fitted.values>0.5))
+t7=xtable(table(paroleTrain.glmSimple$y, paroleTrain.glmSimple$fitted.values>0.5))
+t8=xtable(table(paroleTrain.glmDriver$y, paroleTrain.glmDriver$fitted.values>0.5))
+
+# knitr::kable(list(t1,t2), caption=list(modelsNames[1], modelsNames[2]) )
+
+print(t1, file="t1.tex", floating=FALSE)
+print(t2, file="t2.tex", floating=FALSE)
+print(t3, file="t3.tex", floating=FALSE)
+print(t4, file="t4.tex", floating=FALSE)
+print(t5, file="t5.tex", floating=FALSE)
+print(t6, file="t6.tex", floating=FALSE)
+print(t7, file="t7.tex", floating=FALSE)
+print(t8, file="t8.tex", floating=FALSE)
+
+```
+
+\begin{table}[!h]
+\centering
+\subfloat[Model `r modelsNames[1]`]{\label{tab:tab1}\scalebox{1}{\input{./t1}}}\qquad
+\subfloat[Model `r modelsNames[2]`]{\label{tab:tab2}\scalebox{1}{\input{./t2}}}\qquad
+\subfloat[Model `r modelsNames[3]`]{\label{tab:tab3}\scalebox{1}{\input{./t3}}}\\
+\subfloat[Model `r modelsNames[4]`]{\label{tab:tab4}\scalebox{1}{\input{./t4}}}\qquad
+\subfloat[Model `r modelsNames[5]`]{\label{tab:tab5}\scalebox{1}{\input{./t5}}}\qquad
+\subfloat[Model `r modelsNames[6]`]{\label{tab:tab6}\scalebox{1}{\input{./t6}}}\\
+\subfloat[Model `r modelsNames[7]`]{\label{tab:tab7}\scalebox{1}{\input{./t7}}}\qquad
+\subfloat[Model `r modelsNames[8]`]{\label{tab:tab8}\scalebox{1}{\input{./t8}}}
+\caption{Porównanie Confusion Matrix}
+\label{tab:tab}
+\end{table}
+
+Jak widaæ wszystkie modele s¹ do siebie bardzo zbli¿one, ró¿nice s¹ marginalne, a ka¿dy ze zbydowanych modeli doœc dobrze dopasowuje siê do danych (je¿eli mo¿emy tak mówiæ w przypadku danych, na których model siê uczy³).
+
+---
+
+## AIC & AUC
+
+W tym podrozdziale skupimy siê na dwóch miarach dobroci modelu, AUC i AIC. Nie bêdziemy tutaj rozpisywaæ siê na temat tych¿e wskaŸników, wiadome jest, ¿e preferujemy modele z ni¿szym AIC oraz wy¿szym AUC. Wartoœæ AUC jest œcisle zwi¹zana z krzyw¹ ROC, która bêdziemy analizowali w jednym z kolejnych rozdzia³óW.
+
+```{r AICAUC, results='asis'}
+
+AUC=vector()
+
+for(i in 1:8)
+{
+    foo     =(models$model==modelsNames[i])
+    ROCRPred=prediction(models[foo,2], models[foo,3]) 
+    AUC[i]  =as.numeric(performance(ROCRPred, "auc")@y.values) 
+
+}
+
+info=cbind(info,AUC)
+names(info)=c(names(info), "AUC")
+
+knitr::kable(round(info[,-1:-3],4), caption="Miary dobroci modelu")
+
+```
+
+\newpage
+Po raz kolejny nie dochodzimy do niczego zaskakuj¹cego, wszystkie modele s¹ bardzo do siebie zbli¿one, ró¿nice miar dobroci s¹ marginalne. Najbardziej skomplikowane modele maj¹ wysokie AIC i choæ wartoœci AUC s¹ wy¿sze od pozosta³ych przestaniemy siê nimi interesowaæ w kolejnych analizach. Zrobimy to zgodnie z zasad¹, ¿e im prostszy model tym lepiej, a dodawanie kolejnych zmiennych nie przynosi w tym wypadku ¿adnych wymiernych korzyœci, a wrêcz szkodzi.
+
+Odrzucamy wiêc dwa, skomplikowane modele o wysokim AIC, tzn *FullExtra* oraz *Age5Factor*. Model *FullExtra* mo¿e siê jeszcze przydaæ podczas zach³;annego algorytmu wybierania modelu - obecnoœæ wszystkich zmiennych mo¿e byæ pomocna.
+
+---
+
+## Sensitivity, specificity oraz precision
+
+Przeanalizujemy 3 wspó³czynniki, które opisuj¹ nasz model, _sensitivity_, _specificity_ i _precision_, dane one s¹ nastêpuj¹cymi wzorami:
+
+\begin{gather*}
+\text{Sensitivity}=\frac{TP}{TP+FN}\\\\
+\text{Specificity}=\frac{TN}{TN+FP}\\\\
+\text{Precision}=\frac{TP}{TP+FP}\\\\
+\end{gather*}
+
+Ka¿dy okreœla inn¹ zale¿noœæ na jakiej nam zale¿y. W naszym problemi najistotniejsz wydaje siê _sensitivity_ - nie chcemy wypuszczaæ na wolnoœæ wiêŸniów, którzy dopuœcili siê przestêpstwa bêd¹c na zwolnieniu warunkowym. Tzn. chcemy maksymalizowaæ tê wartoœæ.
+
+Wspo³czynniki przedstawiaj¹ siê nastêpuj¹co:
+
+```{r SSP}
+
+SSP=vector()
+
+positive=(models$violator==1)
+negative=!positive
+
+for(i in 1:8)
+{
+    foo      =(models$model==modelsNames[i])
+    tPositive=sum((models$predProb>0.5)&positive&foo)
+    bar      =tPositive/sum(foo&positive) # sensitivity
+    tNegative=sum((models$predProb<=0.5)&negative&foo)
+    bar      =c(bar,tNegative/sum(negative&foo))
+    bar      =c(bar,tPositive/sum((models$predProb>0.5)&foo))
+    SSP      =rbind(SSP, bar)
+}
+
+SSP          =as.data.frame(SSP)
+names(SSP)   =c("Sensitivity", "Specificity", "Precision")
+rownames(SSP)=modelsNames
+
+knitr::kable(round(SSP[c(-2,-4),],3), caption="SSP&TruePositive&FalseNegative")
+
+
+```
+
+Ró¿nice s¹ bardzo ma³e, dok³adneœæ ka¿dego z modelu jest w 90% co jest zadawalaj¹c¹ wartoœci¹.
+
+---
+
+\newpage
+## Krzywa ROC
+Przejdziemy teraz do wykresów krzywej ROC (_Receiver Operator Characteristic_). Przeanalizujemy j¹ tylko dla jednego modelu, aby nie pokazywaæ bardzo podobnej krzywej siedem razy. 
+
+Krzywa ROC dla modelu *Full*:
+
+```{r ROCCurve}
+
+ROCRPred=prediction(paroleTrain.glmFull$fitted.values, paroleTrain.glmFull$y)
+ROCRPerf=performance(ROCRPred, "tpr", "fpr")
+plot(ROCRPerf, colorize=TRUE, print.cutoffs.at=seq(0,0.8,0.1), text.adj=c(-0.2, 1.7))
+
+```
+
+Widzimy, ¿e nasz model dobrze dopasowuje siê do problemu. Tak jak wczeœnie powiedzieliœmy, chcielibyœmy masymalizowaæ _TPR_ czyli _sensitivity_. Gdybyœmy "przykrêcili œrubê" w naszym modelu wtedy moglibysmy osi¹gn¹æ poziom _TPR_ na poziomie 50%, czyli w co drugim przypadku nasz model s³usznie ocenia³by danego wiêŸnia jako "ryzykownego". To powinno zostaæ poddane dalszej dyskusji, w gronie ekspertów.
+
+Sprawd¿my jednak jak by wygl¹da³a sytuacja wspó³czynników SSP po obni¿eniu progu odciêcia do 0.35:
+
+```{r SSPbis}
+
+SSP=vector()
+
+positive=(models$violator==1)
+negative=!positive
+
+for(i in 1:8)
+{
+    foo      =(models$model==modelsNames[i])
+    tPositive=sum((models$predProb>0.35)&positive&foo)
+    bar      =tPositive/sum(foo&positive) # sensitivity
+    tNegative=sum((models$predProb<=0.35)&negative&foo)
+    bar      =c(bar,tNegative/sum(negative&foo))
+    bar      =c(bar,tPositive/sum((models$predProb>0.35)&foo))
+    SSP      =rbind(SSP, bar)
+}
+
+SSP          =as.data.frame(SSP)
+names(SSP)   =c("Sensitivity", "Specificity", "Precision")
+rownames(SSP)=modelsNames
+
+knitr::kable(round(SSP[c(-2,-4),],3), caption="SSP")
+
+
+```
+
+Po obni¿eniu progu, zgodnie z zapowiedziami, wzros³o _sensitivity_, oczywiœcie kosztem _specificity_, ale g³ównym priorytet powinno byæ zapewnienie bezpieczeñstwa, a nie obni¿enie kosztów utrzymania wiêzieñ. Zauwa¿my, ¿e ró¿nica pomiêdzy modelami *Simple*, a *Full* znacz¹co zmala³a.
+
+---
+
+\newpage
+## Algorytm zach³anny.
+
+U¿yjemy algorytmu zach³annego pos³uguj¹cego siê miar¹ dobroci AIC, by wybraæ mo¿liwie uproszczony, ale nadal dobry model. 
+Dzia³aniu algorytmu poddamy modele *Full*, *Simple*. Poni¿ej przedstawiamy jego kroki:
+
+```{r STEPFull, echo=TRUE}
+
+paroleTrain.glmFullSTEP=step(glm(violator~.,data=paroleTrain[,c(-1,-2,-10,-11,-12,-13,-14)], 
+                                 family="binomial"))
+
+```
+
+Tak wygl¹da³y kroki dla modelu z pe³nymi danymi, teraz czas na model z danymi uproszczonymi.
+\newpage
+
+```{r STEPSimple, echo=TRUE}
+
+paroleTrain.glmSimpleSTEP=step(glm(violator~.,data=paroleTrain[,c(-1,-2,-3,-5,-6,-8,-11)], 
+                                   family="binomial"))
+
+```
+
+\newpage
+
+Algrytm ten¿e wy³oni³ dwa modele które przedstawiamy poni¿ej \newline (dla modelu *FullExtra*, ostateczny model uproszczony okaza³ siê to¿samy z uproszczonym modelem *Simple*). 
+
+
+```{r STEPprezi}
+
+pander::pander(paroleTrain.glmFullSTEP, style="rmarkdown", caption="Model z pe³nymi danymi", split.table=Inf)
+pander::pander(paroleTrain.glmSimpleSTEP, style="rmarkdown", caption="Model z uproszczonymi danymi", split.table=Inf)
+
+```
+
+Takim sposobem otrzymaliœmy kilka sensownych modeli, kolejnym krokiem bêdzie przetestowanie ich na zbiorze testowym, oraz wybór najlepszego.
+
+---
+
+## Walidacja
+
+Walidacjê przeprowadzimy dal 4 modeli, *Full* oraz *Simple* przed i po upraszczaniu algorytmem zach³annym ze wzglêdu na AIC. Poni¿ej przedstawiamy _Confusion Matrix_ dla ka¿dego z modeli.
+
+```{r Walidacja}
+
+test.glmFullSTEP=predict(paroleTrain.glmFullSTEP, type="response", paroleValidate)
+test.glmFull=predict(paroleTrain.glmFull, type="response", paroleValidate)
+test.glmSimpleSTEP=predict(paroleTrain.glmSimpleSTEP, type="response", paroleValidate)
+test.glmSimple=predict(paroleTrain.glmSimple, type="response", paroleValidate)
+
+v1=xtable(table(paroleValidate$violator, test.glmFullSTEP>0.5))
+v2=xtable(table(paroleValidate$violator, test.glmFull>0.5))
+v3=xtable(table(paroleValidate$violator, test.glmSimpleSTEP>0.5))
+v4=xtable(table(paroleValidate$violator, test.glmSimple>0.5))
+
+print(v1, file="v1.tex", floating=FALSE)
+print(v2, file="v2.tex", floating=FALSE)
+print(v3, file="v3.tex", floating=FALSE)
+print(v4, file="v4.tex", floating=FALSE)
+
+```
+
+\begin{table}[!h]
+\centering
+\subfloat[Pe³ne dane, uproszczony model]{\label{tab:tabv1}\scalebox{1.2}{\input{./v1}}}\qquad
+\subfloat[Pe³ne dane, pe³ny model]{\label{tab:tabv3}\scalebox{1.2}{\input{./v2}}}\\
+\subfloat[Uproszczone dane, uproszczony model]{\label{tab:tabv4}\scalebox{1.2}{\input{./v3}}}\qquad
+\subfloat[Pe³ne dane, pe³ny model]{\label{tab:tabv5}\scalebox{1.2}{\input{./v4}}}
+
+\caption{Porównanie Confusion Matrix dla danych na zbiorze walidacyjnym}
+\label{tab:tabv}
+\end{table}
+
+Widzimy, ¿e model dzia³aj¹cy na uproszczonych danych lepiej zachowuje siê w naszym zadaniu - przy standardowym poziomie odciêcia jego _TPR _ by³o wy¿szê niz modelu dzia³aj¹cego na pe³nych danych. Pondto po raz kolejny korzystamy tytaj z zale¿noœci
+$\text{prosty model}>\text{skomplikowany model}$. 
+
+\newpage
+Zobaczmy jak kszta³tuje _sensitivity_, _specificity_ i _precision_:
+
+```{r SSPbcis}
+
+VAnames=c("FullSTEP", "Full", "SimpleSTEP", "Simple")
+
+predVA=data.frame(model=c(rep("FullSTEP", length.out=length(test.glmFullSTEP)), 
+                          rep("Full", length.out=length(test.glmFull)), 
+                          rep("SimpleSTEP", length.out=length(test.glmSimpleSTEP)), 
+                          rep("Simple", length.out=length(test.glmSimple))), 
+                  predProb=c(test.glmFullSTEP,
+                             test.glmFull,
+                             test.glmSimpleSTEP,
+                             test.glmSimple),
+                  violator=c(paroleValidate[,9],
+                             paroleValidate[,9], 
+                             paroleValidate[,9],
+                             paroleValidate[,9]))
+
+
+SSP=vector()
+
+positive=(predVA$violator==1)
+negative=!positive
+
+for(i in 1:4)
+{
+    foo      =(predVA$model==VAnames[i])
+    tPositive=sum((predVA$predProb>0.5)&positive&foo)
+    bar      =tPositive/sum(foo&positive) # sensitivity
+    tNegative=sum((predVA$predProb<=0.5)&negative&foo)
+    bar      =c(bar,tNegative/sum(negative&foo))
+    bar      =c(bar,tPositive/sum((predVA$predProb>0.5)&foo))
+    tPositive=sum((predVA$predProb>0.35)&positive&foo)
+    bar      =c(bar,tPositive/sum(foo&positive)) # sensitivity
+    tNegative=sum((predVA$predProb<=0.35)&negative&foo)
+    bar      =c(bar,tNegative/sum(negative&foo))
+    bar      =c(bar,tPositive/sum((predVA$predProb>0.35)&foo))
+    SSP      =rbind(SSP, bar)
+}
+
+SSP          =as.data.frame(SSP)
+names(SSP)   =c("Sensitivity", "Specificity", "Precision", ".35 Sensitivity", ".35 Specificity", ".35 Precision")
+rownames(SSP)=VAnames
+
+knitr::kable(round(SSP,2), caption="SSP", split.table=Inf)
+
+
+```
+
+Powy¿sza tabela potwierdza nasze wczeœniejsze obserwacje: model niedoszacowuj ryzyka zwi¹zanego z danym wiê¿niem. Jednak gdy tylko zmienimy próg odciêc na 0.35 zaczyna dzia³aæ rozs¹dniej. Modele STEP, tzn. mo modyfikacji algorytme zach³annym s¹ niewra¿liwe na zmienê miejsca odciêcia, s¹ bardziej "stabilne". Z kolei modele sprzed modyfikacji daj¹ niskie _sensitivity_, co jest niepo¿¹dane w naszym problemie. Wszystkie modele daj¹ bardzo dobre _specificity_, które oczywiœcie spada wraz ze zmian¹ granicy odciêcia.
+
+## Podsumowanie
+
+Uzyskalismy 4 modele, wszystkie na ca³kiem niez³ym poziomie. Wskazanie ostatecznego modelu jest trudne my siê tego nie podejmiemy. Ka¿dy z nich ma swoje wady i zalety, dlatego byæ mo¿e warto by by³o skombinowaæ je jakoœ ze sob¹. Wœród wszystkich modeli te same czynniki s¹ "silne". Daje nam to podstawy myœleæ, ¿e faktycznie to, ¿e dany wiêzieñ dopuœci siê przestêpstwa bêd¹c na zwolnieniu warunkowym, jesteœmy wstanie okreœliæ z wysokim prawdopodobieñstwe tylko za pomoc¹ jego historii. Gdybyœmy mieli wiêcej danych lub by³y by one bardziej szczegó³owe (wiêcej informacji o rejonie odsiadki, rodzaju przewinienia) to byc mo¿e uda³oby siê zbudowaæ jeszcze dok³adniejszy model. Nie zmienia to jednak fakty, ¿e w du¿ym stopniu uda³o nam siê rozwi¹zaæ problem bezarbitra¿owej oceny wiêŸniów, tylko na podstawie suchych faktó. Jest to z jednej strony niebezpieczne, gdy¿ traktjujemy cz³owieka bardzo przedmiotowa, ale z drugiej strony zabezpieczamy siê przed subiektywnoœci¹ decyzji ludzkich.

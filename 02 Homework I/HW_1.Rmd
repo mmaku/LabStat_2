@@ -1,0 +1,827 @@
+---
+lang: pl-PL
+title: "LabStat2 - Sprawozdanie 1"
+author: "Micha³ Makowski"
+date: "29 listopada 2016"
+output:
+ pdf_document:
+   toc: yes
+subtitle: '...czyli jak przewidzieæ cenê mieszkania...'
+---
+
+```{r libraries, include=FALSE}
+rm(list=ls()) 
+
+options(width=100)
+
+# install.packages("PBImisc")
+library(PBImisc)
+# install.packages("ggplot2")
+library(ggplot2)
+# install.packages("moments")
+library(moments)
+# install.packages("lmtest")
+library(lmtest)
+# install.packages("MASS")
+library(MASS)
+# install.packages("GGally")
+library(GGally)
+# install.packages("car")
+library(car)
+# install.packages("ggfortify")
+library(ggfortify)
+
+```
+
+# Wstêp
+
+### Dane
+
+Zbiór, który bêdziemy analizowali, jest modyfikacj¹ danych pochodzacych z pakietu autorstwa p. Przemys³awa Biecka *PBImisc*. 
+Powasta³ on na bazie og³oszeñ z portalu [oferty.net](www.ofery.net) i zawiera informacjê o transakcjach na rynku mieszkañ w Warszawie,
+w latach 2007-2009. W stosunku do oryginalnego zbioru, nasz jest zmodyfikowany: usuniêto pewne informacje, 
+a niekompletne rekordy zosta³y usuniête.
+
+```{r apartments, message=FALSE, warning=FALSE, include=FALSE}
+
+data("apartments")
+apartments <- apartments[,c(13,3,5,7,8,14,9)]
+apartments <- apartments[complete.cases(apartments),]
+apartments$district <- factor(apartments$district)
+
+```
+
+### Cel
+
+Cel jaki bedziemy starali siê osi¹gnaæ to predykcja ceny za metr^2^ na podstawie obserwowanych czynników.
+
+# Podstawowa analiza i przygotowanie danych
+
+Przyjrzyjmy siê danym:
+
+```{r initial checks}
+
+str(apartments)
+summary(apartments)
+
+```
+
+Do dyspozycji mamy `r nrow(apartments)` obserwacji `r ncol(apartments)` zmiennych, z których dwie s¹ kategoryczne 
+(*district*, *condition*), trzy dyskretne (*n.room*, *floor*, *construction.date*) 
+oraz dwie, przynajmniej teoretycznie, ci¹g³e (*m2.price*,*surface*).
+
+Mamy informacje o **dzielnicy**, **stanie**, **liczbie pokoi**, **piêtrze**, **dacie budowy**, **powierzchni** i oczywiœcie o 
+**cenie za metr^2^**. Bêdziemy próbowaæ znaleŸæ model regresji, który pozwoli nam wyznaczyc cenê metra kwadratowego w oparciu o nie.
+
+W kolejnych akapitach bêdziemy po kolei analizowaæ ka¿d¹ ze zmiennych. Robimy to po to, aby zorientowaæ siê w danych, 
+a tak¿e mieæ lepsze wyobra¿enie z czym pracujemy. Zoproponujê te¿ pewne uproszczenia, które mog¹ siê przydaæ przy konstrukcji regresji.
+
+### Cena za metr kwadratowy
+
+Zacznijmy od rzeczy teoretycznie najwa¿niejszej, czyli cen za metr kwadratowy:
+
+```{r m2.price histogram, echo=FALSE, dpi = 50,  fig.width=6, message=FALSE, warning=FALSE}
+
+ggplot(apartments, aes(x=m2.price)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(m2.price), color="blue"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(m2.price), color="green"), linetype="dashed", size=1) +
+    labs(title="Histogram", x="Cena za m^2 [PLN]", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(apartments$m2.price)),
+                    paste('Œrednia =', round(mean(apartments$m2.price)),2))) +
+    annotate("text", x=17500, y=90, label=paste("Odchylenie std. =", round(sqrt(var(apartments$m2.price)), 2))) +
+    annotate("text", x=17500, y=85, label=paste("Skoœnoœæ =", round(skewness(apartments$m2.price), 2))) +
+    annotate("text", x=17500, y=80, label=paste("Kurtoza =", round(kurtosis(apartments$m2.price), 2)))
+
+```
+
+Analizuj¹c powy¿szy histogram dochodzimy do wniosku, ¿e w naszym zbiorze dominuj¹ mieszkania do 15tyœ./m^2^ z³otych. 
+Warto zwróciæ uwagê (i zapamiêtaæ na potrzeby kolejnych kroków), ¿e mieszkañ powy¿ej 15tyœ./m^2^ jest
+`r length(apartments$m2.price[apartments$m2.price>15000])`, 
+a mieszkañ powy¿ej 17,5tyœ/m^2^. ju¿ tylko
+`r length(apartments$m2.price[apartments$m2.price>17500])`, 
+co stanowi odowiednio
+`r round(length(apartments$m2.price[apartments$m2.price>15000])/length(apartments$m2.price),3)`%
+i
+`r round(length(apartments$m2.price[apartments$m2.price>17500])/length(apartments$m2.price),3)`%
+liczby wszystkich obserwacji. S¹ to mieszkania zdecydowanie dro¿sze od najczêsciej kupowanych i byæ mo¿e niekoniecznie 
+s¹ odpowiednie do modelowania, gdy¿ prawdopodobnie mo¿emy je zaliczyæ jako luksusowe, a dobra luksusowe rz¹dz¹ siê swoimi prawami. 
+Pozosta³e statystyki pozostawimy bez dog³êbnego komentarza, potwierdzaj¹ one g³ownie to, co widzimy na histogramie.
+
+OD razy odetniemy odserwacje odstaj¹ce, spójrzmy ponownie na wykres:
+
+```{r m2.price manipulation, include=FALSE}
+
+    apartments <- apartments[apartments$m2.price<15000,]
+  
+```
+
+```{r m2.price histogram2, echo=FALSE, dpi = 50,  fig.width=6, message=FALSE, warning=FALSE}
+
+ggplot(apartments, aes(x=m2.price)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(m2.price), color="blue"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(m2.price), color="green"), linetype="dashed", size=1) +
+    labs(title="Histogram", x="Cena za m^2 [PLN]", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(apartments$m2.price)),
+                    paste('Œrednia =', round(mean(apartments$m2.price)),2))) +
+    annotate("text", x=12500, y=90, label=paste("Odchylenie std. =", round(sqrt(var(apartments$m2.price)), 2))) +
+    annotate("text", x=12500, y=85, label=paste("Skoœnoœæ =", round(skewness(apartments$m2.price), 2))) +
+    annotate("text", x=12500, y=80, label=paste("Kurtoza =", round(kurtosis(apartments$m2.price), 2)))
+
+```
+
+### Metra¿
+
+PrzejdŸmy do metra¿u mieszkañ, zacznijmy od histogramu:
+
+```{r surface histogram, dpi = 50,  fig.width=6, echo=F, message=F}
+
+ggplot(apartments, aes(x=surface)) +
+    geom_histogram(aes(y =..count..), colour="black", fill="white") +
+    geom_vline(aes(xintercept=mean(surface), color="blue"), linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=median(surface), color="green"), linetype="dashed", size=1) +
+    labs(title="Histogram", x="Powierzchnia [m^2^]", y="Licznoœæ") +
+    scale_colour_manual(name="Statystyki",values=c('green'='green','blue'='blue'),
+                labels=c(paste('Mediana =', median(apartments$surface)), 
+                    paste('Œrednia =', round(mean(apartments$surface)),2))) +
+    annotate("text", x=175, y=107, label=paste("Wariancja =", round(var(apartments$surface), 2))) +
+    annotate("text", x=175, y=100, label=paste("Skoœnoœæ =", round(skewness(apartments$surface), 2))) +
+    annotate("text", x=175, y=93, label=paste("Kurtoza =", round(kurtosis(apartments$surface), 2)))
+
+```
+
+Podobnie jak w ostatnim przypadku mo¿na zauwa¿yæ, ¿e dominuj¹ mieszkania do 150m^2^. 
+Tym razem mieszkañ powy¿ej 150m^2^ jest
+`r length(apartments$surface[apartments$surface>150])`,
+a mieszkañ powy¿ej 175m^2^. ju¿ tylko
+`r length(apartments$surface[apartments$surface>175])`, 
+co stanowi odowiednio
+`r round(length(apartments$surface[apartments$surface>150])/length(apartments$surface),3)`%
+i
+`r round(length(apartments$surface[apartments$surface>175])/length(apartments$surface),3)`%
+liczby wszystkich obserwacji. W przypadku metra¿u nie jesteœmy w stanie stwierdziæ 
+czy mo¿emy zaliczyæ te apartamenty do jakieœ w¹skiej grupy, ale przeanalizujmy te mieszkania dok³adniej:
+
+```{r large surface}
+
+apartments[apartments$surface>150,]
+
+```
+
+Jak widaæ s¹ to mieszkania przedwojenne lub nowe, w dobrym stanie lub wykoñczenia, w wiekszoœci dro¿sze od œredniej. 
+Nietypowa jest obserwacja **525**, która nijak nie wpisuje siê w intuicyjny schemat, gdy¿ znajduje siê w centrum, w nowym budynku, 
+samo mieszkanie jest w bardzo dobrym stanie, a cena zdecydowanie ni¿sza od œredniej. Byæ mo¿e na jego cenê wp³yw mia³y 
+czynniki nie zawarte w naszym zestawieniu. Warto to zapamiêtaæ.
+
+```{r surface vs price, dpi = 50,  fig.width=6, echo=F, message=F}
+
+ggplot(apartments, aes(x=surface, y=m2.price)) +
+    geom_point() +
+    labs(title="Powierzchnia vs Cena", x="Powierzchnia [m^2^]", y="Cena za m^2") +
+    geom_smooth()
+
+```
+
+Do wykresu do³¹czyliœmy liniê regresji, pomoze ona nam przewidzieæ jak mo¿emy modelowaæ cenê za pomoc¹ metra¿u. Mo¿e siê wydawaæ, 
+¿e krzywa dobrze obrazuje trand, ale jest to krzywa co najmniej 3-ego stopnia, za dla du¿ych obserwacji zmienne s¹ mocno rozporszone.
+Poszukiwanie modelu pozostawimy na kolejne rozdzia³y, spróbujmy jeszcze jednej rzeczy, na³ó¿my logarytm na *powierzchniê*.
+
+```{r surface vs price log, dpi = 50,  fig.width=6, echo=F, message=F}
+
+ggplot(apartments, aes(x=log(surface), y=m2.price)) +
+    geom_point() +
+    labs(title="Powierzchnia vs Cena", x="Powierzchnia [m^2^]", y="Cena za m^2") +
+    geom_smooth()
+
+```
+
+Warto zapamiêtaæ tê w³asnoœæ, po na³o¿eniu logarytmu na zmienn¹ *powierzchnia* zmienne wygl¹daj¹ jakby mog³y byæ modelowane
+krzyw¹ drugiego stopnia.
+
+### Dzielnica
+
+```{r district geombar, dpi = 50,  fig.width=6, echo=F, message=F}
+
+ggplot(apartments, aes(x=district)) +
+    geom_bar(aes(y =..count..), colour="black", fill="white") +
+    labs(x="Dzielnica", y="Licznoœæ") +
+    geom_hline(aes(yintercept=10), colour="orange", linetype="dashed", size=1) +
+    coord_flip() +
+    scale_y_continuous(breaks=c(0, 10, 50, 100, 150), minor_breaks=c(0, 50, 100, 150)+25)
+
+```
+
+Na powy¿szym wykresie widzimy, ¿e istnieje wiele obszarów Warszawy, dla których posiadamy bardzo niewiele danych, 
+dla
+`r length(table(apartments$district)[table(apartments$district) < 10])`
+obszarów liczba obserwacji jest mniejsza ni¿ 10. Postaramy siê je jakoœ zagregowaæ, w³¹czaj¹c do wiêkszych terenów.
+Dzielnica doœæ istotnie wp³ywa na atrakcyjnoœæ mieszkania, dlatego pos³u¿ymy siê tutaj danymi liczbowymi, 
+ale tak¿e subiektywn¹ ocena danej lokalizacji. Warszawê mozna podzieliæ na dzielnice wy¿ej i ni¿ej oceniane, 
+np. *Saska Kêpa* jest uwa¿ana za presti¿ow¹, 
+podczas gdy po³o¿ona niedaleko *Praga Pó³noc* posiada opiniê dzielnicy o wysokiej przestêpczoœæi i problematycznych s¹siadach.
+
+Postaramy siê przede wszystkim zmniejszyæ ilosc rejonów w samej Warszawie, tzn. najpierw bêdziemy d¹zyli do organizacji 
+ich wg. podzia³u administracyjnego, a póŸniej, byc mo¿e, jeszcze bardziej ograniczymy iloœc obszarów, 
+w zale¿noœci od ich licznoœci. Podzia³ administracyjny przedstawiamy poni¿ej.
+
+![Podzia³ administracyjny Warszawy](Warszawa_podzial.png)
+
+Grupowanie zmiennych rozpoczniemy od analizy wykresów pude³kowych, przedstawimy na nich strukturê cen na ka¿dym z
+wyszczególnionych obszarów.
+
+```{r district boxplot, echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(x=reorder(district, m2.price), y=m2.price)) +
+    geom_jitter() +
+    geom_boxplot(alpha=.925) +
+    labs(title="Dzielnica vs Cena", x="Dzielnica", y="Cena za m^2") +
+    coord_flip()
+
+```
+
+
+```{r testtI, include=F}
+
+# wilcox.test(apartments$m2.price[apartments$district==""], apartments$m2.price[apartments$district==""], alternative = "l")
+
+```
+
+Wprawdzie nie przeprowadzimy testów statystycznych, ale mo¿emy "na oko" stwierdziæ, ¿e bylibyœmy w stanie uszeregowaæ 
+dzielnice od najdro¿szej do najtañszej. Nie to jest przedmiotem naszych rozwa¿añ, wiêc pos³u¿ymy siê 
+powy¿szym wykresem jako wskazówki przy klastrowaniu danych. 
+
+W danych *Kabaty* i *Bródno* zosta³y zakwalifikowane jako dzielnice, my wl¹czymy je do wiekszych zbiorów, tzn. 
+*Ursynowa* i *Targówka*, do których w rzeczywistoœci nale¿¹. Posiadaj¹ one tylko po jednej obserwacji, 
+wieæ nie bylibyœmy w stanie nic z niej wyci¹gnaæ, a ponadto nie odbiegaj¹ one od danych z obszarów "matek".
+
+Ponadto wszystkie miejscowoœci le¿¹ce na po³udniu po³¹czymy w klasê *Przedmieœcia*, jednak¿e sam Józefos³aw W³¹czymy do *Ursynowa*, 
+bazujemy na tym, ¿e le¿¹ blisko siebie (ponadto kiedyœ pojawi³y sie plany wl¹czenia *Józefos³awia* do miasta Warszawy), 
+a sama obserwacja z *Józefos³awia* jest zbli¿ona do tych na *Ursynowie* i *Kabatach*:
+
+```{r check Jozefoslaw}
+
+subset(apartments, (district=="Jozefoslaw" | district=="Ursynow" | district=="Kabaty") & 
+      construction.date >= 2000 & condition=="bardzo dobry" & surface <= 50)
+
+```
+
+Podobnie sytuacja ma siê z *Z¹bkami*, które w³¹czymy do, powiêkszonego ju¿, *Targówka*.
+
+```{r check Zabki}
+
+subset(apartments, (district=="Zabki" | district=="Brodno" | district=="Targowek") & 
+      construction.date >= 1990)
+
+```
+
+```{r initial district manipulation, include=FALSE}
+
+    levels(apartments$district) <- c(levels(apartments$district), "Przedmiescia")
+  
+    apartments$district[apartments$district=="Zabki"]="Targowek"
+    apartments$district[apartments$district=="Brodno"]="Targowek" 
+
+    apartments$district[apartments$district=="Kabaty"]="Ursynow" 
+    apartments$district[apartments$district=="Jozefoslaw"]="Ursynow" 
+
+    apartments$district[apartments$district=="Karczew"]="Przedmiescia" 
+    apartments$district[apartments$district=="Brwinow"]="Przedmiescia" 
+    apartments$district[apartments$district=="Pruszkow"]="Przedmiescia" 
+  
+    apartments$district <- factor(apartments$district)
+
+```
+
+Ponownie przyjrzyjmy siê strukturze naszych danych:
+
+```{r initial district analysis, echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(x=district)) +
+    geom_bar(aes(y =..count..), colour="black", fill="white") +
+    labs(x="Dzielnica", y="Licznoœæ") +
+    geom_hline(aes(yintercept=10), colour="orange", linetype="dashed", size=1) +
+    coord_flip() +
+    scale_y_continuous(breaks=c(0, 10, 50, 100, 150), minor_breaks=c(0, 50, 100, 150)+25)
+
+ggplot(apartments, aes(x=reorder(district, m2.price), y=m2.price)) +
+    geom_jitter() +
+    geom_boxplot(alpha=.925) +
+    labs(title="Dzielnica vs Cena", x="Dzielnica", y="Cena za m^2") +
+    coord_flip()
+
+```
+
+Nadal nie wszystkie "koszyki" nas satysfakconuj¹, dokonamy ogólniejszego podzia³u, po to, aby w ka¿dym z
+klastrów znajdowa³o sie ponad 10 obserwacji. Uproœcimy strukturê podzia³u na dzielnice. Siedem centralnych dzielnic
+pozostawimy bez zmian, a pozosta³e podzielimy wg. po³o¿enia wzglêdem centrum, tzn. Pó³noc, Po³ódnie, Wschód, Zachód. 
+Taki podzia³ by³by uzyteczny podczas ew. iwestycji, inwestor wybiera wiêkszy obszar miasta i tam poszukuje mieszkania/terenu. 
+
+Koñcowy podzia³ wygl¹da nasTepuj¹co:
+
+| Samodzielne dzielnice | Pó³noc    | Po³udnie   | Wschód    | Zachód | Przedmieœcia |
+|-----------------------|-----------|------------|-----------|--------|--------------|
+| Mokotów               | Bia³o³êka | Józefos³aw | Bródno    | Bemowo | Brwinów      |
+| Ochota                | Bielany   | Kabaty     | Rembertów | Ursus  | Karczew      |
+| Praga Po³udnie        |           | Ursynów    | Targówek  | W³ochy | Pruszków     |
+| Praga Pó³noc          |           | Wilanów    | Wawer     |        |              |
+| Œródmieœcie           |           |            | Weso³a    |        |              |
+| Wola                  |           |            | Z¹bki     |        |              |
+| ¯oliborz              |           |            |           |        |              |
+
+```{r district manipulation, include=FALSE}
+
+    levels(apartments$district) <- c(levels(apartments$district), "Wschod", "Zachod", "Polnoc", "Poludnie")
+  
+    apartments$district[apartments$district=="Rembertow"]="Wschod"
+    apartments$district[apartments$district=="Targowek"]="Wschod"
+    apartments$district[apartments$district=="Wesola"]="Wschod"
+    apartments$district[apartments$district=="Wawer"]="Wschod"
+  
+    apartments$district[apartments$district=="Wlochy"]="Zachod" 
+    apartments$district[apartments$district=="Ursus"]="Zachod"
+    apartments$district[apartments$district=="Bemowo"]="Zachod"
+
+    apartments$district[apartments$district=="Bielany"]="Polnoc" 
+    apartments$district[apartments$district=="Bialoleka"]="Polnoc" 
+
+    apartments$district[apartments$district=="Wilanow"]="Poludnie" 
+    apartments$district[apartments$district=="Ursynow"]="Poludnie" 
+
+    apartments$district <- factor(apartments$district)
+
+```
+
+Strukturê danych obrazuj¹ poni¿sze wykresy:
+
+```{r final district analysis, echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(x=reorder(apartments$district, apartments$m2.price), y=apartments$m2.price)) +
+    geom_jitter() +
+    geom_boxplot(alpha=.925) +
+    labs(x="Dzielnica", y="Cena za m^2") +
+    coord_flip()
+
+ggplot(apartments, aes(x=apartments$district)) +
+    geom_bar(aes(y =..count..), colour="black", fill="white") +
+    labs(title="Dzielnica vs Cena", x="Dzielnica", y="Licznoœæ") +
+    geom_hline(aes(yintercept=10), colour="orange", linetype="dashed", size=1) +
+    coord_flip() +
+    scale_y_continuous(breaks=c(0, 10, 50, 100, 150), minor_breaks=c(0, 50, 100, 150)+25)
+
+```
+
+Nadal mamy problem z ma³¹ liczb¹ obserwacji dla koszyka *Przedmieœcia*, ale nie jesteœmy w stanie (na chwilê obecn¹) nic z tym zrobiæ.
+Byæ mo¿e zupe³nie wykluczymy koszyk *Przedmieœcia* z modelu, jako ¿e zajmowaÆ sie mamy danymi dla stolicy, 
+a nie DLA miejscowoœci podwarszawSkich. Co do samych cen, byc widoczna jest pewna zale¿noœæ, obserwujemy tereny dro¿sze i tañsze, 
+jednak¿e dok³adniej przeanalizujmy to póŸniej. 
+
+### Liczba pokoi
+
+Pierwsza rzecz jaka przychodzi na myœl, to taka, ¿e liczba pokoi powninna byæ mocno skorelowana z metra¿em.
+Sprawd¿my:
+
+```{r corr n.rooms, echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(x=surface, y=n.rooms)) +
+    labs(title="Powierzchnia vs Liczba pokoi", x="Powierzchnia [m^2]", y="Liczba pokoi") +
+    scale_y_continuous(breaks=seq(from=1, to=9, by=1)) +
+    geom_point()
+
+```
+
+Okazuje siê, ¿e istotnie tak jest. Korelacja tych dwóch zmiennych wynosi `r cor(apartments$surface, apartments$n.room)`. 
+Widaæ mocn¹ zale¿noœc, co zresz¹ jest oczywiste, gdy¿ nikt nie buduje stumetrowych kawalerek. 
+
+Zdarzaj¹ siê pewne nietypowe obserwacje, spróbujmy je podejrzeæ:
+
+```{r check n.rooms}
+
+temp <- subset(apartments, (n.rooms==1 & surface>=50) | n.rooms>=6 | (surface > 100 & n.rooms <= 3))
+temp[order(temp$n.rooms),]
+
+```
+
+Poza **509** oraz **232** nie widzimy ¿adnych skrajnych obserwacji
+
+Czas na w³aœciw¹ analizê liczby pokoi, napierw licznoœæ:
+
+```{r n.rooms geombar, dpi = 50,  fig.width=6, echo=F, message=F}
+
+ggplot(apartments, aes(x=n.rooms)) +
+    geom_bar(aes(y =..count..), colour="black", fill="white") +
+    labs(x="Liczba pokoi", y="Licznoœæ") +
+    geom_hline(aes(yintercept=10), colour="orange", linetype="dashed", size=1) +
+    scale_y_continuous(breaks=c(0, 10, 100, 200, 300), minor_breaks=c(0, 100, 200, 300)+50) +
+    scale_x_continuous(breaks=seq(from=1, to=9, by=1))
+
+```
+
+Widaæ, ¿e w danych dominuj¹ kawalerki oraz mieszkania 2/3 pokojowe, wiêksze s¹ zdecydowanie mniej popularne. 
+Byæ mo¿e pol¹czenie wiêkszych mieszkañ w jeden koszyk by³oby dobrym rozwi¹zaniem, bêdziemy mieæ to na uwadze.
+
+```{r n.rooms boxplot, echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(n.rooms, m2.price)) +
+    geom_jitter() +
+    geom_boxplot(aes(group=n.rooms), alpha=.925) +
+    labs(title="Liczba Pokoi vs Cena", x="Liczba pokoi", y="Cena za m^2") +
+    scale_x_continuous(breaks=seq(from=1, to=9, by=1))
+
+```
+
+Po raz kolejny nie bêdziemy siê teraz zajmowaæ porównywaniem rozk³adów i ich œrednich. 
+Wydaje siê jednak, ¿e wsród mniejszych mieszkañ mozna zaobserwowaæ trend malej¹cej cany wraz z rosn¹c¹ liczb¹ pokoi, 
+ten trend za³amuje siê dla mieszkañ du¿ych. Zamieñmy zmienn¹ dot. liczby pokoi na zmienn¹ klasyfikacyjn¹, 
+a ponadto potraktujmy mieszkanie wiêksze ni¿ 4-pokojowe jako jedn¹ klasê. Po sklastrowaniu dane wygl¹daj¹ tak:
+
+```{r n.rooms manipulation, include=FALSE}
+
+    apartments$n.rooms[apartments$n.rooms>=4] <- "4+"
+    apartments$n.rooms <- factor(apartments$n.rooms)
+
+```
+
+```{r n.rooms boxplot2, echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(n.rooms, m2.price)) +
+    geom_jitter() +
+    geom_boxplot(aes(group=n.rooms), alpha=.925) +
+    labs(title="Liczba Pokoi vs Cena", x="Liczba pokoi", y="Cena za m^2") 
+
+```
+
+```{r testtII, include=F}
+
+# wilcox.test(apartments$m2.price[apartments$n.rooms==3], apartments$m2.price[apartments$n.rooms==1], alternative = "l")
+
+```
+
+### Piêtro
+
+Przeanalizujmy strukturê danych o piêtrze, napierw licznoœæ:
+
+```{r floor geombar, dpi = 50,  fig.width=6, echo=F, message=F}
+
+ggplot(apartments, aes(x=floor)) +
+    geom_bar(aes(y =..count..), colour="black", fill="white") +
+    labs(x="Liczba pokoi", y="Kondygnacja") +
+    geom_hline(aes(yintercept=10), colour="orange", linetype="dashed", size=1) +
+    scale_y_continuous(breaks=c(0, 10, 50, 100), minor_breaks=c(0, 50, 100)+50) +
+    scale_x_continuous(breaks=seq(from=1, to=20, by=1),labels=as.character(c("Parter",seq(from=1, to=19, by=1))))
+
+```
+
+Widoczna jest du¿a dominacja mieszkan po³o¿onych na ni¿szych kondygnacjach. 
+Wynika to ze stosunkowo niskiej zabudowy Warszawy, gdzie dominuj¹ budynki do 10 piêter. 
+Na chwilê obecn¹ w Warszawie mamy 53 budynki o wys. ponad 65m (co odpowiada mniej wiêcej 15 pietrom), 
+w 2007r. tych budynków by³o zdecydowanie mniej, a wiec i mieszkañ w nich dostêpnych. 
+
+Przyjrzyjmy sie strukturze cen:
+
+```{r floor boxplot , echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(floor, m2.price)) +
+    geom_jitter() +
+    geom_boxplot(aes(group=floor), alpha=.925) +
+    labs(title="Piêtro vs Cena", x="Piêtro", y="Cena za m^2") +
+    scale_x_continuous(breaks=seq(from=1, to=20, by=1),labels=as.character(c("Parter",seq(from=1, to=19, by=1)))) +
+    geom_smooth()
+    
+```
+
+Tutaj zdecydowanie trudniej doszukaæ siê zale¿noœci, ale na mo¿na próbowaæ podzieliæ mieszkania na 
+nisko po³o¿one (do 5-ego piêtra), wysoko po³o¿one (5-10 piêtro), mieszkania b. wysoko po³o¿one (powy¿ej 10-ego piêtra). 
+Tak zrobimy. MOglibyœmy zostawiæ dane tak jak sa i próbowaæ dobraæ odpowiedni wielomiañ 4 stopnia (niebieska linia na rysunku), 
+ale pietro nie wydaje siê byæ najlepszym predyktorem do tego typu zabiegów. Bardzo wiele zale¿y od samej infrastruktury budynku.
+Po sklastrowaniu dane prezentuj¹ sie nastêpuj¹co:
+
+```{r floor manipulation, include=FALSE}
+
+    apartments$floor[apartments$floor>=9] <- "9+"
+    apartments$floor[apartments$floor<=4] <- "1-4"
+    apartments$floor[apartments$floor>=5 & apartments$floor<=8] <- "5-8"
+
+    apartments$floor <- factor(apartments$floor)
+
+```
+
+```{r floor boxplot2 , echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(floor, m2.price)) +
+    geom_jitter() +
+    geom_boxplot(aes(group=floor), alpha=.925) +
+    labs(title="Piêtro vs Cena", x="Piêtro", y="Cena za m^2") +
+    geom_smooth()
+    
+```
+
+### Stan
+
+Zgodnie z tradycj¹, najpierw licznoœæ:
+
+```{r condition geombar, dpi = 50,  fig.width=6, echo=F, message=F}
+
+ggplot(apartments, aes(x=condition)) +
+    geom_bar(aes(y =..count..), colour="black", fill="white") +
+    labs(x="Stan", y="Licznoœæ") +
+    geom_hline(aes(yintercept=10), colour="orange", linetype="dashed", size=1) 
+
+```
+
+Dominuj¹ mieszkania w stanie dobry i bardzo dobry. Zastanawia rozgraniczenie pomiêdzy mieszkania *do wykoñczenia* i w stanie *deweloperskim*, wydaj¹ siê byæ do siebie zbli¿one.
+
+```{r condition boxplot , echo=F, fig.height=8, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(x=reorder(condition, m2.price), y=m2.price)) +
+    geom_jitter() +
+    geom_boxplot(alpha=.925) +
+    labs(x="Stan", y="Cena za m^2") 
+
+```
+ 
+Stan *deweloperski* w³¹czymy do *do wykoñczenia*, gdy¿ nie odbiega on struktur¹ danych, a i w rzeczywiœtoœci s¹ do siebie zbli¿one. 
+Nastêpnie obydwa te stany wl¹czymy do *bardzo dobrego*, maj¹ podobne struktuwy, a przez potencjalnego klienta odbierane s¹ jako nowe lub prawie nowe. Zdajê siê byæ to dobrym uogólnieniem.
+
+```{r condition manipulation, include=FALSE}
+
+    apartments$condition[apartments$condition=="do wykonczenia"] <- "bardzo dobry"
+    apartments$condition[apartments$condition=="deweloperski"] <- "bardzo dobry"
+
+    apartments$condition <- factor(apartments$condition)
+
+```
+
+### Rok budowy
+
+Zgodnie z tradycj¹, najpier licznoœæ:
+
+```{r construction.date geombar, dpi = 50,  fig.width=6, echo=F, message=F}
+
+ggplot(apartments, aes(x=construction.date)) +
+    geom_bar(aes(y =..count..), colour="black", fill="white") +
+    labs(x="Rok budowy", y="Licznoœæ") +
+    geom_hline(aes(yintercept=10), colour="orange", linetype="dashed", size=1) 
+
+```
+
+Na powy¿szym wykresie ewidentnie widaæ 2, a nawet 3 wydarzenia historyczne:
+
+* I Wojnê Œwiatow¹
+* II Wojnê Œwiatow¹
+* Transformacjê systemow¹
+
+Mog¹ one miec wp³ywa na ceny na rynku, gdy¿ pomiedzy tymi wydarzeniami budowano budynki w inny sposób.
+Zobaczmy jak kszta³towa³y siê ceny:
+
+```{r construction.date , echo=F, fig.height=10, dpi = 50,  fig.width=6}
+
+ggplot(apartments, aes(x=construction.date, y=m2.price)) +
+    geom_point() +
+    labs(x="Rok budowy", y="Cena za m^2") +
+    geom_vline(aes(xintercept=1990), colour = "red", linetype="dashed", size=1) +
+    geom_vline(aes(xintercept=1945), colour = "orange", linetype="dashed", size=1)
+
+```
+
+Zauwa¿amy tutaj bardzo ciekaw¹ zale¿noœæ - mieszkania wybudowane po 1990 (czerwona linia) maj¹ bardzo deklikatny trend ceny rosn¹cej
+wraz z malej¹cym wiekiem budynki. Natomiast dla mieszkañ budowanych w czasach komuny widaæ zale¿noœc, ¿e im starsze s¹ mieszkania, 
+tym na ogó³ s¹ dro¿sze. Byæ mo¿e warto wprowadziæ now¹ zmienn¹ kategoryczn¹ lub wrêcz podzieliæ dane w 1990 roku i próbowaæ stworzyæ dwa, niezale¿ne modele.
+
+# Model
+
+Zacznê od budowy najprostszego modelu, opisze go, a nastêpnie przedstawiê model bardziej skomplikowany, który, 
+miejmy nadziejê, bedzie lepszy od niego. Przeprowadzê jego diagnostyke
+
+### Model podstawowy
+
+Maj¹c w pamiêci to, ze zaobserwowaliœmy w ostatni rozdziale przejdziemy do konstrukcji modelu regresji.
+Jako zmienn¹ która ma najwiekszy wp³yw na cene mieszkania uznam jego lokalizacjê, spróbujmy i porównajmy go od razu z modelem zerowym:
+
+```{r regresion1 summary}
+
+lm.district <- lm(m2.price~reorder(district, m2.price), apartments)
+summary(lm.district)
+
+```
+
+Pierwsze podsumowanie opisze dog³êbnie, kolejnê juz tylko skrótowo. Resiudua nie s¹ symetrycznie roz³o¿one wzglêdem zera, 
+co niestety nie daje dobrych nadziei na ich normalnoœæ. Byæ mo¿e warto odrzuciæ skrajne obserwacje, 
+szczególnie mieszkania najdro¿sze. Przy tak du¿ej wariancji estymatora mediana residuów, 
+mimo tego, ¿e nie jest w pobli¿u zera, mo¿e nie byc a¿ tak s³abym wynikiem. P-wartoœci dla statystyk s¹ na tyle wysokie, 
+¿e zmiejszanieiloœc kategorii nie wydaje siê dobrym pomys³em. R^2^ na poziomie 0.25 nie jest dobry wynikiem, 
+ale na pewno uda siê go poprawiæ.
+
+Porównajmy nasz model z modelem zerowym.
+
+```{r regression1 anova}
+
+lm.zero <- lm(m2.price~1, apartments)
+anova(lm.zero, lm.district)
+
+```
+
+jak widaæ RRS dla skonstruowanego modelu jest mniejsze ni¿ dla modelu zerowego, wartoœc statystyki du¿a, P-wartoœc ma³a, 
+wiêc nasz model zdajê sie byc lepszy, od modelu zerowego.
+
+PrzejdŸmy do analizy wykresów diagnostycznych.
+
+```{r regression1 plots, echo=FALSE}
+
+par(mfrow=c(2,3))
+autoplot(lm.district, which = 1:6, ncol = 3, label.size = 1)
+
+```
+
+Z racji, ¿e nasze zmienne s¹ kategoryczne, to nie widzimy ³adnej "chmury" wokó³ œredniej, powinniœmy przeanalizowaæ residua 
+dla ka¿dej z kategorii. Analizuj¹c wykres Q-Q widzimy, ¿e mamy problem z odstaj¹cymi obserwacja, 
+tzn. najdro¿sze mieszkania zaburzaj¹ nasz¹ regresjê. Jest to kolejny powód, by sie im przyjrzeæ dok³adniej. 
+Mo¿emy albo próbowaæ szukaæ zale¿noœci pomiêdzy nimi, albo je usun¹æ ze zbioru danych.
+Wariancja nie jest jednorodna, wraz z cen¹ za m^2^ roœnie, co znów nas alarmuje. Miara Cooka jest niska dla ka¿dej z obserwacji, 
+wiêc nie ma obserwacji istotnie wp³ywowych, wynika to jednak z tego, ¿e mamy zmienne kategoryczne, 
+odjêcie jednej zmiennej nie wp³ywa istotnie na wspó³czynniki z pozosta³ych kategorii. 
+Podobnie ma siê sprawa na ostatnim wykresie.
+
+```{r regression1 test, echo=FALSE}
+
+shapiro.test(stdres(lm.district))
+bptest(lm.district)
+gqtest(lm.district)
+dwtest(lm.district, order.by=fitted(lm.district))
+
+```
+
+Niestety, p-wartoœci testów s¹ bardzo ma³e, jednie test GQ na homoskedastycznoœæ nie stawia podstaw do odrzucenia zipotezy HO. 
+Model powy¿szy pozostawia wiele do ¿yczenia, spróbujmy go zmodyfikoawæ
+
+### Model bardzo zmodyfikowany
+
+Dokonajmy szeregu modyfikacji modelu:
+
+* Wprowad¿my wiêcej zmiennych objaœniaj¹cych:
+    + Dodajmy zmienn¹ odpowiadaj¹c¹ za liczbê pokoi, ale podzielmy j¹ na dwa obszary, po 1990r. i przed
+    + Dodajmy zmienn¹ *Data budowy* w trzeciej potêdze (i wszystkich mniejszych)
+    + Dodajmy zmienn¹ *Stan*
+* Tranformacja BC.
+* Usuñmy danych z *Przedmieœæ*.
+
+Teram model regresji prezentuje siê nastêpuj¹co:
+
+```{r data manipulation, message=FALSE, warning=FALSE, include=FALSE}
+    
+    apartments <- apartments[-(apartments$district=="Przedmiescia"),]
+    apartments$district <- factor(apartments$district)
+
+    now <- apartments$construction.date>=1991
+    beforeWWII <- apartments$construction.date<=1945
+    comunism <- (apartments$construction.date>=1946 & apartments$construction.date<=1990)
+
+    # apartments$construction.date <- factor(apartments$construction.date)
+
+
+```
+
+
+```{r regresion2 summary}
+
+lm.apartments <- lm(m2.price~reorder(district, m2.price) +
+                        reorder(condition, m2.price) +
+                        reorder(n.rooms, m2.price):now +
+                        reorder(floor, m2.price)*I(construction.date^3) +
+                        I(construction.date^2) +
+                        construction.date, apartments)
+
+lambda <- boxcox(lm.apartments, plotit=F)$x[which.max(boxcox(lm.apartments, plotit=F)$y)]
+apartmentsBC <- apartments
+apartmentsBC$m2.price <- log(apartments$m2.price)
+
+lm.apartmentsBC <- lm(m2.price~reorder(district, m2.price) +
+                          reorder(condition, m2.price) +
+                          reorder(n.rooms, m2.price):now +
+                          reorder(floor, m2.price)*I(construction.date^3) +
+                          I(construction.date^2) +
+                          construction.date, apartmentsBC)
+
+# summary(lm.apartments)
+summary(lm.apartmentsBC)
+
+```
+
+Jak widaæ taki model lepiej dopasowuje siê do danych ni¿ poprzedni, choæ R^2^ nadal nie jest za wysokie. 
+P-wartoœci dla wiêkszoœci z wspó³czynników s¹ ma³e. rozk³ad residów jest bardziej symetryczny. 
+Kolej na wykresy diagnstyczne:
+
+```{r regression2 plots, echo=FALSE}
+
+par(mfrow=c(2,3))
+plot(comunism)
+autoplot(lm.apartments, which = 1:6, ncol = 3, label.size = 1)
+
+```
+
+Wygl¹daj¹ zdecydowanie lepiej ni¿ dla najprostszego modelu, Niestety, residua s¹ przesuniête, ale mniej ni¿ w modelu prostym.
+Równomiernoœæ wariancji te¿ wygl¹da lepiej, miara Cooka jest niska, nawet dla obserwacji odstaj¹cych. 
+D¿wignia siê zwiêkszy³a, ale do ogleg³oœci Cooka jeszcze daleko.
+
+```{r regression2 tests, echo=FALSE}
+
+shapiro.test(stdres(lm.apartmentsBC))
+bptest(lm.apartmentsBC)
+gqtest(lm.apartmentsBC)
+dwtest(lm.apartmentsBC, order.by=fitted(lm.apartmentsBC))
+
+```
+ 
+Powy¿sze testy utwierdaj¹ nas w przekonaniu, ¿e niestety rozk³ad residuów nie jest idealny i w pe³eni nie spe³nia za³o¿eñ. 
+Test SW na normalnoœæ raczej nie daje nadzieji na faktyczny rozk³ad normalny, z testów na homoskedastycznoœæ jestnie test BP
+odrzuca hipeteze zerow¹. Usuwanie obserwacji odstaj¹cych nie wp³ywa za bardzo na otrzymywane wartoœci.
+
+### Model mniej zmodyfikowany
+
+Ostatnim modelem jaki bêdziemy analizowaæ bêdzie uproszczony model z poprzedniego akapitu
+Wykonajmy nastêpuj¹ce modyfikacje w stosunku do poprzedniego modelu:
+
+* Usuñmy zmienn¹ *Data budowy*.
+* Usuñmy zmienn¹ *Liczba pokoi*.
+
+Budujemy wiêc model tylko na podstawie zmiennych kategorycznych, nie iloœciowych.
+
+```{r data manipulationFinal, message=FALSE, warning=FALSE, include=FALSE}
+    
+    # apartments <- apartments[-(apartments$m2.price>=),]
+
+```
+
+```{r regresion3 summary}
+
+lm.apartments <- lm(m2.price~reorder(district, m2.price) +
+                        reorder(condition, m2.price), apartments)
+
+lambda <- boxcox(lm.apartments, plotit=F)$x[which.max(boxcox(lm.apartments, plotit=F)$y)]
+apartmentsBCSimple <- apartments
+apartmentsBCSimple$m2.price <- (apartmentsBCSimple$m2.price^lambda-1)/lambda
+
+lm.apartmentsBCSimple <- lm(m2.price~reorder(district, m2.price) +
+                        reorder(condition, m2.price), apartmentsBCSimple)
+
+summary(lm.apartmentsBCSimple)
+
+```
+
+Jak widaæ taki model lepiej dopasowuje siê do danych gorzej ni¿ poprzedni, R^2^ jest ni¿sze. 
+P-wartoœci dla ka¿dego z wspó³czynników s¹ ma³e. rozk³ad residów jest bardziej symetryczny. 
+Kolej na wykresy diagnstyczne:
+
+```{r regression3 plots, echo=FALSE, message=TRUE, warning=TRUE}
+
+par(mfrow=c(2,3))
+autoplot(lm.apartmentsBCSimple, which = 1:6, ncol = 3, label.size = 1)
+# ggpairs(apartmentsBC)
+
+```
+
+Wygl¹daj¹ du¿o lepiej ni¿ dla najprostszego modelu, zdaj¹ siê byæ tak¿e lepsze od tych za modelu zaawansowago.
+
+```{r regression3 tests, echo=FALSE}
+
+shapiro.test(stdres(lm.apartmentsBCSimple))
+bptest(lm.apartmentsBCSimple)
+gqtest(lm.apartmentsBCSimple)
+dwtest(lm.apartmentsBCSimple, order.by=fitted(lm.apartmentsBCSimple))
+
+```
+ 
+Tym razem nie mamy podstaw, do odrzucenia hipotez o dobrym rozk³adzie residuów, jednak¿e zosta³o to obarczone spor¹ 
+strat¹ wartoœci R^2^. Normalnoœæ residuów jest spe³niona, jednorodnoœæ tak¿e.
+Jak sie okaza³o bardzo prosty model spe³nia za³o¿enia, ale niekoniecznie spe³nia nasze oczekiwania.
+
+# Podsumowanie
+
+Niestety, na podstawie analizowanych danych ciê¿ko jest uzyskaæ satysfakconuj¹ce wnioski. Byc mo¿e przy u¿yciu bardziej 
+zaawansowanych metod lub z poœwiêceniem wiêkszej iloœci czasu by siê to uda³o. W analizowanym przez nas 
+zbiorze nie s¹ widoczne (przynajmniej dla mnie), ¿adne powa¿ne zale¿noœci pomiêdzy cen¹, a pozosta³ymi zmiennymi. 
+Owszem widaæ ja, ale nie wp³ywaj¹ one na cenê na tyle mocno, aby zbudowaæ model, 
+który dawa³by odpowiednie podstawy do skorzystania 
+z niego. Przyk³adowo, przy mieszkania starych bardzo du¿y wp³yw na cenê mo¿e mieæ stan ogólny budynku, 
+który nie zosta³ ujêty w tabeli.
+Istotny wp³yw mog¹ mieæ te¿ dodatkowe informacje, jak okoliczna infrastruktura dla dzieci, 
+bliskoœæ ci¹gów komunikacyjnych.
+
+Byæ mo¿e przy podziale obecne struktury bardziej znaleŸlibyœmy wiêcej zale¿noœci. 
+Mi uda³o siê skonstruowaæ dwa, wzglêdnie sensowne modele, jeden bardziej dopasowywuj¹cy siê do danych, 
+ale nie spe³niaj¹cy za³o¿eñ, drugi z kolei dopasowany gorzej, ale zo te spe³niaj¹cy wymagane za³o¿enia. 
+Mimo usilnych prób nie uda³o mi siê uzyskaæ satysfakcjonuj¹cych efektów, 
+które ³¹czy³yby zalety obydwu regresji. 
+
+Poni¿ej prezentujê wspó³czynniki uzyskane w ka¿dym z modeli.
+
+```{r final}
+
+coefficients(lm.apartmentsBCSimple)
+coefficients(lm.apartmentsBC)
+coefficients(lm.district)
+
+```
+
