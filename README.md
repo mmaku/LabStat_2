@@ -1,4 +1,4 @@
-Cpp_1
+Laboratorium statystyczne 2
 =====
 
 All scripts/programs which I have done during 'Statistical laboratory 2' course conducted by Piotr Sobczyk at the Institute of Mathematics (University of Wrocław). 
